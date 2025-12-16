@@ -1,0 +1,16 @@
+### model LLaMA-3.1-8B-Instruct Qwen2.5-7B-Instruct
+model_name_or_path: /mnt/home/user28/llms/Qwen2.5-7B-Instruct
+adapter_name_or_path: /mnt/home/user28/llms/Qwen2.5-7B-Instruct-checkpoints/sft_plan+sft_sci
+trust_remote_code: true
+
+### method
+do_train: false
+do_eval: true
+
+### dataset
+eval_dataset: metaplan_test.json
+dataset_dir: data/metaplan/test
+template: qwen
+cutoff_len: 2048
+overwrite_cache: true
+dataloader_num_workers: 2

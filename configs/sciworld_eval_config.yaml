@@ -1,0 +1,9 @@
+### model LLaMA-3.1-8B-Instruct Qwen2.5-7B-Instruct
+model_name_or_path: /mnt/home/user28/llms/LLaMA-3.1-8B-Instruct
+adapter_name_or_path: /mnt/home/user28/llms/LLaMA-3.1-8B-Instruct-checkpoints/MAML_plan+sft_sci
+trust_remote_code: true
+
+### data
+template: llama3
+cutoff_len: 2048
+overwrite_cache: true
