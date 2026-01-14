@@ -137,10 +137,5 @@ cython_debug/
 envs/alfworld/alfworld_data
 envs/webshop/data
 envs/webshop/search_engine/indexes
-envs/webshop/search_engine/indexes_1k
-envs/webshop/search_engine/indexes_100
-envs/webshop/search_engine/indexes_100k
-envs/webshop/search_engine/resources
-envs/webshop/search_engine/resources_1k
-envs/webshop/search_engine/resources_100
-envs/webshop/search_engine/resources_100k
+
+.gitignore
