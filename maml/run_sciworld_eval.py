@@ -15,7 +15,7 @@ from .data_loader import get_template_and_fix_tokenizer
 with open("/mnt/home/user28/MPRL/data/instructions/sciworld_inst.txt", 'r') as f:
     BASE_PROMPT = f.read()    
 
-env_jar_path = "data/sciworld/scienceworld.jar"
+env_jar_path = "data/eval_idx/sciworld/scienceworld.jar"
 
     
 def sciworld_step_patch():
@@ -82,9 +82,9 @@ def sciworld_run(env, messages, template, tokenizer, model, gen_kwargs):
     sys.stdout.flush()
     
     # setting a max reward to track best performance, and max_error_step for early stopping when invalid actions repeatedly occur
-    reward, curr_error_step, max_error_step = 0, 0, 10
+    reward, curr_error_step, max_error_step = 0, 0, 5
     curr_invalid_step, max_invalid_step = 0, 5
-    for _ in range(40):
+    for _ in range(50):
         input_ids = template.encode_inputs(tokenizer, messages)
         input_ids = torch.tensor([input_ids]).to(model.device)
         attention_mask = torch.ones_like(input_ids)
@@ -185,7 +185,6 @@ def main():
         env.load(task_name, variationIdx=variation_idx, simplificationStr="easy", generateGoldPath=False)
         ob, info = env.reset()
         
-        key = task_name + str(variation_idx)
         messages = [
             {"role": "user", "content": BASE_PROMPT},
             {"role": "assistant", "content": "OK"},

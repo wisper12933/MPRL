@@ -25,7 +25,6 @@ class MAMLTrainer(Seq2SeqTrainer):
     query_size: Number of samples in the query set for outer loop.
     gen_kwargs: Generation kwargs for prediction step.
     
-    FOMAML √ 
     MAML √
     """
     def __init__(

@@ -69,7 +69,7 @@ def patch_config(
         logger.info_rank0("KV cache is disabled during training.")
     
     init_kwargs["low_cpu_mem_usage"] = model_args.low_cpu_mem_usage
-    init_kwargs["torch_dtype"] = model_args.compute_dtype
+    init_kwargs["torch_dtype"] = model_args.compute_dtype  # torch_dtype -> dtype
     if init_kwargs["low_cpu_mem_usage"]:
         if "device_map" not in init_kwargs and model_args.device_map:
             logger.info_rank0(f"Setting device_map to {model_args.device_map}")

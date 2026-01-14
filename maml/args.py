@@ -31,11 +31,11 @@ class DataArgs:
         metadata={"help": "The file name (with format suffix, e.g. .json) of dataset(s) to use for training. Use commas to separate multiple datasets."},
     )
     dataset_dir: str = field(
-        default="data/metaplan/train",
+        default="data/step1_metaplan/train",
         metadata={"help": "Path to the folder containing the datasets for MAML."},
     )
     cutoff_len: int = field(
-        default=2048,
+        default=8192,
         metadata={"help": "The cutoff length of the tokenized inputs in the dataset."},
     )
     train_on_prompt: bool = field(

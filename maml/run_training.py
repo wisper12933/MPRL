@@ -150,6 +150,7 @@ def main():
     template = get_template_and_fix_tokenizer(tokenizer, data_args)
     dataset_module = get_dataset(template, model_args, data_args, training_args, tokenizer)
     model = load_model(tokenizer, model_args, finetuning_args, training_args.do_train)
+    model.config.pad_token_id = tokenizer.pad_token_id
     
     if dataset_module.get("train_dataset") is None:
         raise ValueError("Trainer: training requires a train_dataset.")

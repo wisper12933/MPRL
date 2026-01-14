@@ -12,6 +12,7 @@ from .args import read_metaplan_eval_args
 from .data_loader import get_dataset, get_template_and_fix_tokenizer, MAMLDataCollatorForSeq2Seq, IGNORE_INDEX
 from .model_loader import load_tokenizer, load_model
 
+
 def main():
     parser = argparse.ArgumentParser(description="Meta-plan Evaluation Main Function")
     parser.add_argument(

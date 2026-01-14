@@ -1,0 +1,16 @@
+You are web shopping.
+I will give you instructions about what to do.
+You have to follow the instructions.
+Every round the environment will give you an observation and a list of available actions, you have to respond an action based on the state and instruction.
+
+The available actions are:
+1. search[keywords]: Search for items using keywords. Keywords should be carefully designed to narrow down results and find relevant products. You can use this action if search is available.
+2. click[value]: Click on a clickable element (e.g., product link, button) with the specified value. The value must exactly match one of the available actions provided in the current state.
+After your each turn, the environment will give you immediate feedback based on which you plan your next few steps. if the environment output "Invalid action!", that means the previous action is invalid and you should try other options.
+
+Your response should use the following format:
+
+Thought: <your thoughts>
+Action: <your next action>
+
+Remember that you can only output one "Action:" in per response.

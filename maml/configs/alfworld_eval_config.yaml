@@ -1,0 +1,9 @@
+### model LLaMA-3.1-8B-Instruct Qwen3-4B-Instruct
+model_name_or_path: /mnt/home/user28/llms/Qwen3-4B-Instruct
+adapter_name_or_path: /mnt/home/user28/llms/Qwen3-4B-Instruct-checkpoints/sft_alf
+trust_remote_code: true
+
+### data
+template: qwen3
+cutoff_len: 4096
+overwrite_cache: true

@@ -60,7 +60,6 @@ def _load_single_dataset(
             split=dataset_attr.split,
             cache_dir=model_args.cache_dir,
             num_proc=data_args.preprocessing_num_workers,
-            trust_remote_code=model_args.trust_remote_code,
         )
     
     if data_args.max_samples is not None:

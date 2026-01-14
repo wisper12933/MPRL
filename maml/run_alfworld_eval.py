@@ -4,7 +4,7 @@ import yaml
 import argparse
 
 import torch
-import alfworld
+import envs.alfworld as alfworld
 
 from .args import read_specify_task_eval_args
 from .model_loader import load_tokenizer, load_model
@@ -48,7 +48,7 @@ def alfworld_run(env, messages, template, tokenizer, model, gen_kwargs):
     sys.stdout.flush()
     
     # setting max_error_step for early stopping when invalid actions repeatedly occur
-    curr_error_step, max_error_step = 0, 6
+    curr_error_step, max_error_step = 0, 5
     for _ in range(40):
         input_ids = template.encode_inputs(tokenizer, messages)
         input_ids = torch.tensor([input_ids]).to(model.device)
@@ -119,7 +119,7 @@ def main():
     gen_kwargs["pad_token_id"] = tokenizer.pad_token_id
     
     # load alfworld env
-    with open("alfworld/base_config.yaml") as reader:
+    with open("envs/alfworld/base_config.yaml") as reader:
         config = yaml.safe_load(reader)
     
     env = getattr(alfworld.agents.environment, config["env"]["type"])(config, train_eval="eval_out_of_distribution")
