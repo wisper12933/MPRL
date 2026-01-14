@@ -134,8 +134,7 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
+*.zip
 envs/alfworld/alfworld_data
 envs/webshop/data
 envs/webshop/search_engine/indexes
-
-.gitignore
