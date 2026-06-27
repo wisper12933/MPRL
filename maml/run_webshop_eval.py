@@ -12,8 +12,10 @@ from .model_loader import load_tokenizer, load_model
 from .data_loader import get_template_and_fix_tokenizer
 
 
-with open("/mnt/home/user28/MPRL/data/instructions/webshop_inst.txt", 'r') as f:
-    BASE_PROMPT = f.read()   
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG_PATH = os.path.join(REPO_ROOT, "maml", "configs", "webshop_eval_config.yaml")
+DEFAULT_PROMPT_PATH = os.path.join(REPO_ROOT, "data", "instructions", "webshop_inst.txt")
+DEFAULT_TEST_IDX_PATH = os.path.join(REPO_ROOT, "data", "indices", "webshop", "test_indices.json")
 
 
 ### Evaluation loop function
@@ -88,20 +90,29 @@ def webshop_run(env, task, messages, template, tokenizer, model, gen_kwargs):
     
 
 def main():
-    parser = argparse.ArgumentParser(description="SciWorld Evaluation Main Function")
+    parser = argparse.ArgumentParser(description="WebShop Evaluation Main Function")
     parser.add_argument(
         "--config",
         type=str,
-        required=True,
+        default=DEFAULT_CONFIG_PATH,
         help="Path to the YAML configuration file containing DataArgs, ModelArgs, and TrainArgs."
     )
     parser.add_argument(
         "--test_idx_path",
         type=str,
-        required=True,
+        default=DEFAULT_TEST_IDX_PATH,
         help="Path to the indices JSON file for the selected test tasks."
     )
+    parser.add_argument(
+        "--prompt_path",
+        type=str,
+        default=DEFAULT_PROMPT_PATH,
+        help="Path to the base prompt file."
+    )
     args = parser.parse_args()
+    with open(args.prompt_path, 'r', encoding='utf-8') as f:
+        base_prompt = f.read()
+
     # read args
     data_args, model_args, generation_args, finetuning_args = read_specify_task_eval_args(args)
     # load model and tokenizer
@@ -135,7 +146,7 @@ def main():
         env.reset(task)
         
         messages = [
-            {"role": "user", "content": BASE_PROMPT},
+            {"role": "user", "content": base_prompt},
             {"role": "assistant", "content": "OK"},
             {"role": "user", "content": env.observation},
         ]
