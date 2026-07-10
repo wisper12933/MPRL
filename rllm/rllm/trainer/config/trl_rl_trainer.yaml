@@ -21,6 +21,7 @@ training:
   num_minibatches: 1
   clip_ratio: 0.2
   max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
 
 sampling:
   temperature: 0.6
@@ -47,7 +48,7 @@ data:
   val_files: null
   max_prompt_length: 2048
   max_response_length: 16384
-  train_batch_size: 16
+  train_batch_size: 16  # per-GPU prompt count when using accelerate launch
   val_batch_size: 30
 
 trainer:

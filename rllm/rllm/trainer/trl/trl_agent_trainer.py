@@ -1,6 +1,7 @@
 """TRL-based trainer for rLLM agents (no Ray).
 
 Uses AsyncAgentExecutionEngine for rollout and a local HF policy for updates.
+Multi-GPU is supported via HuggingFace Accelerate (launch with `accelerate launch`).
 """
 
 from __future__ import annotations
@@ -12,11 +13,12 @@ import os
 import time
 import uuid
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import torch
 from omegaconf import OmegaConf
+from torch.utils.data import DistributedSampler
 
 from rllm.agents.agent import Episode, Step, Trajectory
 from rllm.engine.agent_execution_engine import AsyncAgentExecutionEngine
@@ -44,25 +46,52 @@ class TrlAgentTrainer:
         self.agent_args = agent_args or {}
         self.env_args = env_args or {}
 
-        self.train_dataloader = torch.utils.data.DataLoader(
-            train_dataset,
-            batch_size=self.config.data.train_batch_size,
-            shuffle=True,
-            collate_fn=lambda x: x,
-        )
-        self.val_dataloader = torch.utils.data.DataLoader(
-            val_dataset,
-            batch_size=self.config.data.val_batch_size,
-            shuffle=False,
-            collate_fn=lambda x: x,
-        ) if val_dataset is not None else None
-
         self.trainer = TrlPolicyTrainer(config=config)
         start_batch = self.trainer.initialize(resume_from_checkpoint=True)
         self.start_batch = start_batch
 
+        per_device_batch = self.config.data.train_batch_size
+        per_device_val_batch = self.config.data.val_batch_size
+
+        train_sampler = None
+        val_sampler = None
+        if self.trainer.num_processes > 1:
+            train_sampler = DistributedSampler(
+                train_dataset,
+                num_replicas=self.trainer.num_processes,
+                rank=self.trainer.accelerator.process_index,
+                shuffle=True,
+            )
+            if val_dataset is not None:
+                val_sampler = DistributedSampler(
+                    val_dataset,
+                    num_replicas=self.trainer.num_processes,
+                    rank=self.trainer.accelerator.process_index,
+                    shuffle=False,
+                )
+
+        self.train_sampler = train_sampler
+        self.train_dataloader = torch.utils.data.DataLoader(
+            train_dataset,
+            batch_size=per_device_batch,
+            shuffle=(train_sampler is None),
+            sampler=train_sampler,
+            collate_fn=lambda x: x,
+        )
+        self.val_dataloader = None
+        if val_dataset is not None:
+            self.val_dataloader = torch.utils.data.DataLoader(
+                val_dataset,
+                batch_size=per_device_val_batch,
+                shuffle=False,
+                sampler=val_sampler,
+                collate_fn=lambda x: x,
+            )
+
         self.tokenizer = self.trainer.get_tokenizer()
         sampling_params = OmegaConf.to_container(self.config.sampling, resolve=True)
+        group_size = self.config.training.group_size
+        default_parallel = per_device_batch * group_size
 
         self.agent_execution_engine = AsyncAgentExecutionEngine(
             config=self.config,
@@ -75,7 +104,7 @@ class TrlAgentTrainer:
             agent_args=agent_args,
             env_class=env_class,
             env_args=env_args,
-            n_parallel_agents=self.config.agent.get("n_parallel_agents") or self.config.data.train_batch_size * self.config.training.group_size,
+            n_parallel_agents=self.config.agent.get("n_parallel_agents") or default_parallel,
             rollout_engine_args={
                 "model": self.trainer.get_model(),
                 "tokenizer": self.tokenizer,
@@ -83,6 +112,7 @@ class TrlAgentTrainer:
                 "max_response_length": self.config.data.max_response_length,
                 "sampling_params": sampling_params,
                 "disable_thinking": self.config.get("disable_thinking", False),
+                "device": self.trainer.device,
             },
         )
         self.num_train_batches = len(self.train_dataloader) if self.train_dataloader else None
@@ -93,17 +123,21 @@ class TrlAgentTrainer:
     async def _fit_agent_async(self):
         from rllm.utils.tracking import Tracking
 
-        os.makedirs(self.config.trainer.default_local_dir, exist_ok=True)
-        logger_backend = self.config.trainer.logger
-        if isinstance(logger_backend, str):
-            logger_backend = [logger_backend]
+        if self.trainer.is_main_process:
+            os.makedirs(self.config.trainer.default_local_dir, exist_ok=True)
+        self.trainer.wait_for_everyone()
 
-        tracking_logger = Tracking(
-            project_name=self.config.trainer.project_name,
-            experiment_name=self.config.trainer.experiment_name,
-            default_backend=logger_backend,
-            config=OmegaConf.to_container(self.config, resolve=True),
-        )
+        tracking_logger = None
+        if self.trainer.is_main_process:
+            logger_backend = self.config.trainer.logger
+            if isinstance(logger_backend, str):
+                logger_backend = [logger_backend]
+            tracking_logger = Tracking(
+                project_name=self.config.trainer.project_name,
+                experiment_name=self.config.trainer.experiment_name,
+                default_backend=logger_backend,
+                config=OmegaConf.to_container(self.config, resolve=True),
+            )
 
         batch_idx = self.start_batch
         learning_rate = self.config.training.learning_rate
@@ -111,10 +145,13 @@ class TrlAgentTrainer:
         if self.config.trainer.get("val_before_train", False) and self.val_dataloader:
             self._sync_rollout_model()
             val_metrics = await self.validate_agent(self.val_dataloader)
-            if val_metrics:
+            if val_metrics and tracking_logger is not None:
                 tracking_logger.log(data=val_metrics, step=batch_idx)
 
         for epoch in range(self.config.trainer.total_epochs):
+            if self.train_sampler is not None:
+                self.train_sampler.set_epoch(epoch)
+
             for batch_data in self.train_dataloader:
                 if batch_idx < self.start_batch:
                     batch_idx += 1
@@ -130,7 +167,10 @@ class TrlAgentTrainer:
                 self._sync_rollout_model()
                 t_sample_start = time.time()
                 episodes = []
-                async for episode_batch in self.generate_agent_episodes(group_size=group_size, minibatch_size=len(batch_data) // group_size):
+                async for episode_batch in self.generate_agent_episodes(
+                    group_size=group_size,
+                    minibatch_size=max(1, len(batch_data) // group_size),
+                ):
                     episodes.extend(episode_batch)
                 time_metrics["time/sample"] = time.time() - t_sample_start
 
@@ -141,30 +181,43 @@ class TrlAgentTrainer:
                 time_metrics["time/total"] = time.time() - t_start
 
                 rewards = [traj.reward for ep in episodes for traj in ep.trajectories]
+                reward_mean = float(np.mean(rewards)) if rewards else 0.0
                 metrics = {
                     **step_metrics,
                     **time_metrics,
-                    "reward/mean": float(np.mean(rewards)) if rewards else 0.0,
+                    "reward/mean": self.trainer.reduce_mean(reward_mean),
                     "reward/max": float(np.max(rewards)) if rewards else 0.0,
                     "reward/min": float(np.min(rewards)) if rewards else 0.0,
                     "batch/num_episodes": len(episodes),
+                    "distributed/num_processes": self.trainer.num_processes,
+                    "distributed/rank": self.trainer.accelerator.process_index,
                 }
-                tracking_logger.log(data=metrics, step=batch_idx)
-                logger.info("batch=%s metrics=%s", batch_idx, metrics)
+                if tracking_logger is not None:
+                    tracking_logger.log(data=metrics, step=batch_idx)
+                if self.trainer.is_main_process:
+                    logger.info("batch=%s metrics=%s", batch_idx, metrics)
 
-                if self.val_dataloader and self.config.trainer.test_freq > 0 and batch_idx % self.config.trainer.test_freq == 0 and batch_idx > 0:
+                if (
+                    self.val_dataloader
+                    and self.config.trainer.test_freq > 0
+                    and batch_idx % self.config.trainer.test_freq == 0
+                    and batch_idx > 0
+                ):
                     val_metrics = await self.validate_agent(self.val_dataloader)
-                    if val_metrics:
+                    if val_metrics and tracking_logger is not None:
                         tracking_logger.log(data=val_metrics, step=batch_idx)
 
                 if batch_idx % self.config.trainer.save_freq == 0:
                     self.trainer.save_checkpoint(batch_idx)
+                self.trainer.wait_for_everyone()
 
                 batch_idx += 1
 
         if batch_idx % self.config.trainer.save_freq != 0:
             self.trainer.save_checkpoint(batch_idx)
-        del tracking_logger
+        self.trainer.wait_for_everyone()
+        if tracking_logger is not None:
+            del tracking_logger
 
     def _sync_rollout_model(self):
         self.agent_execution_engine.rollout_engine.set_model(self.trainer.get_model())
@@ -209,7 +262,7 @@ class TrlAgentTrainer:
             return {}
         rewards = [traj.reward for traj in trajectories]
         return {
-            "val/reward_mean": float(np.mean(rewards)),
+            "val/reward_mean": self.trainer.reduce_mean(float(np.mean(rewards))),
             "val/reward_std": float(np.std(rewards)),
             "val/reward_min": float(np.min(rewards)),
             "val/reward_max": float(np.max(rewards)),

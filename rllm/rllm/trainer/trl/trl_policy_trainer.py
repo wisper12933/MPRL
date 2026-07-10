@@ -1,14 +1,17 @@
-"""Policy training for TRL-based agent RL (no Ray)."""
+"""Policy training for TRL-based agent RL (no Ray).
+
+Supports single-GPU and multi-GPU via HuggingFace Accelerate (DDP).
+"""
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
 
 import torch
 import torch.nn.functional as F
-from omegaconf import OmegaConf
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from rllm.trainer.trl.trl_data_processor import (
@@ -17,9 +20,6 @@ from rllm.trainer.trl.trl_data_processor import (
     TrlTrajectoryFilter,
     process_episodes,
 )
-
-if TYPE_CHECKING:
-    from peft import PeftModel
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +34,23 @@ class TrlPolicyTrainer:
         self.model = None
         self.tokenizer = None
         self.optimizer = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.accelerator: Accelerator | None = None
 
     def initialize(self, resume_from_checkpoint: bool = True) -> int:
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        grad_accum = self.config.training.get("gradient_accumulation_steps", 1)
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=grad_accum,
+            kwargs_handlers=[ddp_kwargs],
+        )
+
         model_name = self.config.model.name
         trust_remote_code = self.config.model.get("trust_remote_code", False)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        if self.accelerator.is_main_process:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        self.accelerator.wait_for_everyone()
+        if self.tokenizer is None:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
@@ -67,7 +78,6 @@ class TrlPolicyTrainer:
         if self.config.model.get("gradient_checkpointing", False):
             self.model.gradient_checkpointing_enable()
 
-        self.model.to(self.device)
         lr = self.config.training.learning_rate
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
@@ -79,7 +89,27 @@ class TrlPolicyTrainer:
         start_batch = 0
         if resume_from_checkpoint:
             start_batch = self._maybe_resume()
+
+        self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+        if self.accelerator.is_main_process:
+            logger.info(
+                "Initialized TRL policy trainer: num_processes=%s, device=%s",
+                self.accelerator.num_processes,
+                self.accelerator.device,
+            )
         return start_batch
+
+    @property
+    def device(self) -> torch.device:
+        return self.accelerator.device
+
+    @property
+    def is_main_process(self) -> bool:
+        return self.accelerator.is_main_process
+
+    @property
+    def num_processes(self) -> int:
+        return self.accelerator.num_processes
 
     def _checkpoint_dir(self) -> str:
         return self.config.trainer.default_local_dir
@@ -94,7 +124,8 @@ class TrlPolicyTrainer:
         model_path = os.path.join(checkpoint_dir, f"checkpoint-{batch}")
         if not os.path.isdir(model_path):
             return 0
-        logger.info("Resuming from checkpoint %s", model_path)
+        if self.accelerator.is_main_process:
+            logger.info("Resuming from checkpoint %s", model_path)
         if self.config.model.get("use_lora", False):
             from peft import PeftModel
 
@@ -102,17 +133,19 @@ class TrlPolicyTrainer:
             self.model = PeftModel.from_pretrained(base, model_path, is_trainable=True)
         else:
             self.model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=self.model.dtype)
-        self.model.to(self.device)
         optim_path = os.path.join(model_path, "optimizer.pt")
         if os.path.exists(optim_path):
-            self.optimizer.load_state_dict(torch.load(optim_path, map_location=self.device))
+            self.optimizer.load_state_dict(torch.load(optim_path, map_location="cpu"))
         return batch + 1
 
     def save_checkpoint(self, batch_idx: int) -> None:
+        if not self.accelerator.is_main_process:
+            return
         checkpoint_dir = self._checkpoint_dir()
         os.makedirs(checkpoint_dir, exist_ok=True)
         save_path = os.path.join(checkpoint_dir, f"checkpoint-{batch_idx}")
-        self.model.save_pretrained(save_path)
+        unwrapped = self.accelerator.unwrap_model(self.model)
+        unwrapped.save_pretrained(save_path)
         self.tokenizer.save_pretrained(save_path)
         torch.save(self.optimizer.state_dict(), os.path.join(save_path, "optimizer.pt"))
         with open(os.path.join(checkpoint_dir, "latest_batch.txt"), "w") as f:
@@ -182,17 +215,30 @@ class TrlPolicyTrainer:
             chunk = samples[start : start + chunk_size]
             batch = self._collate_samples(chunk)
             self.optimizer.zero_grad()
-            loss, step_metrics = self._importance_sampling_loss(batch)
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.training.get("max_grad_norm", 1.0))
-            self.optimizer.step()
+            with self.accelerator.accumulate(self.model):
+                loss, step_metrics = self._importance_sampling_loss(batch)
+                self.accelerator.backward(loss)
+                if self.accelerator.sync_gradients:
+                    grad_norm = self.accelerator.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.training.get("max_grad_norm", 1.0),
+                    )
+                    total_metrics["loss/grad_norm"] = float(grad_norm)
+                self.optimizer.step()
             total_metrics.update(step_metrics)
-            total_metrics["loss/grad_norm"] = float(grad_norm)
 
         return total_metrics
 
     def get_model(self):
-        return self.model
+        return self.accelerator.unwrap_model(self.model)
 
     def get_tokenizer(self):
         return self.tokenizer
+
+    def wait_for_everyone(self):
+        self.accelerator.wait_for_everyone()
+
+    def reduce_mean(self, value: float) -> float:
+        tensor = torch.tensor([value], device=self.device, dtype=torch.float32)
+        reduced = self.accelerator.reduce(tensor, reduction="mean")
+        return float(reduced.item())

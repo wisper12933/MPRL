@@ -22,7 +22,7 @@
 | 训练引擎 | FSDP / Megatron (verl) | HuggingFace + AdamW（可选 LoRA） |
 | 算法 | GRPO / PPO 等 | GRPO advantage + clipped policy gradient |
 | Agent/Env | `AsyncAgentExecutionEngine` | **同一套** `AsyncAgentExecutionEngine` |
-| 多卡 | 支持（8 GPU 等） | 当前仅单 GPU（可后续扩展 accelerate） |
+| 多卡 | 支持（8 GPU 等） | **Accelerate DDP**（`accelerate launch --num_processes=N`） |
 | 长上下文 offload | 支持 | 受单卡显存限制 |
 
 适合场景：开发机调试、Ray 不可用环境、中小规模单卡实验。  
@@ -236,6 +236,63 @@ Checkpoint 目录结构：
 
 ---
 
+## 多卡训练（Accelerate DDP）
+
+TRL backend 已集成 **HuggingFace Accelerate**，用 DDP 同步训练梯度；每张卡独立做 rollout + 本地 backward。
+
+### 启动方式
+
+```bash
+# 4 卡示例（推荐直接用脚本）
+bash examples/deepscaler/train_deepscaler_trl_4gpu.sh
+
+# 或手动指定
+accelerate launch \
+    --num_processes 4 \
+    --multi_gpu \
+    --mixed_precision bf16 \
+    -m examples.deepscaler.train_deepscaler_trl \
+    data.train_batch_size=4 \
+    training.group_size=4 \
+    ...
+```
+
+也可用 `torchrun`（Accelerate 会自动识别环境）：
+
+```bash
+torchrun --nproc_per_node=4 -m examples.deepscaler.train_deepscaler_trl ...
+```
+
+### Batch 语义（重要）
+
+| 参数 | 含义 |
+|------|------|
+| `data.train_batch_size` | **每张 GPU** 上的 prompt 数 |
+| `training.group_size` | 每个 prompt 的 rollout 条数（GRPO 分组） |
+| 有效全局 prompt 数 | `train_batch_size × num_gpus` |
+| 有效全局 rollout 数 | `train_batch_size × num_gpus × group_size` |
+
+例：4 卡、`train_batch_size=4`、`group_size=4` → 每步 16 个 prompt、64 条 trajectory。
+
+### 多卡行为说明
+
+- 各 rank 通过 `DistributedSampler` 切分数据，**不会重复采样同一 prompt**
+- 各 rank 在本卡 GPU 上用 `TrlEngine` 做 rollout
+- `TrlPolicyTrainer` 用 `accelerator.prepare(model, optimizer)` 做 DDP
+- **仅 rank 0** 写 checkpoint / wandb / console log
+- `reward/mean` 等指标会跨卡 `reduce` 后记录
+
+### 单卡 vs 多卡
+
+| 场景 | 启动命令 |
+|------|----------|
+| 单卡 | `python -m examples.deepscaler.train_deepscaler_trl ...` |
+| 多卡 | `accelerate launch --num_processes 4 ...` |
+
+单卡时 Accelerate 自动退化为 `num_processes=1`，无需改代码。
+
+---
+
 ## 修改现有 example 的检查项
 
 若 agent 需要把其他 example 从 verl 迁到 trl：
@@ -252,15 +309,15 @@ Checkpoint 目录结构：
 
 **当前限制：**
 
-- 单 GPU；无 FSDP / DeepSpeed
-- Rollout 用 `model.generate()`，长序列比 vLLM 慢
+- 多卡为 **DDP 数据并行**，无 FSDP / DeepSpeed 分片
+- Rollout 用各卡本地 `model.generate()`，长序列比 vLLM 慢
 - 无 verl 的 rejection sampling、stepwise advantage 等高级配置
-- 训练与 rollout 串行共享 GPU（generate 在 thread pool 中执行）
+- 每卡 rollout 与 train 串行共享该卡 GPU
 
-**可扩展方向（尚未实现）：**
+**可扩展方向：**
 
-- `accelerate` / `torchrun` 多卡
 - 外接 vLLM server 做 rollout（训练仍用 HF）
+- FSDP / DeepSpeed 支持更大模型
 - 更完整对齐 verl 的 metric / wandb 字段
 
 ---
