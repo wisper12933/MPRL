@@ -91,6 +91,12 @@ tinker = [
     "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git#egg=tinker-cookbook ; python_version >= '3.11'",
 ]
 
+trl = [
+    "trl>=0.17.0",
+    "peft>=0.14.0",
+    "accelerate>=1.2.0",
+]
+
 opentelemetry = [
     "opentelemetry-sdk",
 ]
