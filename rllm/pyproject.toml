@@ -97,6 +97,14 @@ trl = [
     "accelerate>=1.2.0",
 ]
 
+swift = [
+    "accelerate>=1.2.0",
+    "peft>=0.14.0",
+    "openai>=1.0.0",
+    # Optional for colocate mode: pip install vllm
+    # Optional full ms-swift GRPO CLI integration: pip install ms_swift
+]
+
 opentelemetry = [
     "opentelemetry-sdk",
 ]

@@ -95,7 +95,7 @@ class AgentExecutionEngine:
         self.rollout_engine_args = rollout_engine_args
         self.sampling_params = kwargs.get("sampling_params", {})  # for openai api requests
 
-        assert self.engine_name in ["openai", "verl", "tinker", "trl"], "Currently only openai, verl, tinker and trl are supported as rollout engine"
+        assert self.engine_name in ["openai", "verl", "tinker", "trl", "swift"], "Currently only openai, verl, tinker, trl and swift are supported as rollout engine"
         if self.engine_name == "openai":
             from rllm.engine.rollout.openai_engine import OpenAIEngine
 
@@ -126,6 +126,12 @@ class AgentExecutionEngine:
             from rllm.engine.rollout.trl_engine import TrlEngine
 
             self.rollout_engine = TrlEngine(
+                **rollout_engine_args,
+            )
+        elif self.engine_name == "swift":
+            from rllm.engine.rollout.swift_engine import SwiftEngine
+
+            self.rollout_engine = SwiftEngine(
                 **rollout_engine_args,
             )
 
@@ -166,6 +172,9 @@ class AgentExecutionEngine:
             output = await self.rollout_engine.get_model_response(prompt, application_id=application_id, enforce_max_prompt_length=False, **sampling_params)
             return output
         elif self.engine_name == "trl":
+            output = await self.rollout_engine.get_model_response(prompt, application_id=application_id, enforce_max_prompt_length=False, **sampling_params)
+            return output
+        elif self.engine_name == "swift":
             output = await self.rollout_engine.get_model_response(prompt, application_id=application_id, enforce_max_prompt_length=False, **sampling_params)
             return output
         else:
@@ -525,7 +534,7 @@ class AgentExecutionEngine:
 
         self.executor = ThreadPoolExecutor(max_workers=max_concurrency)
 
-        if self.engine_name in ("verl", "trl"):
+        if self.engine_name in ("verl", "trl", "swift"):
             await self.rollout_engine.wake_up()  # type: ignore
 
         semaphore = asyncio.Semaphore(self.n_parallel_agents)
@@ -560,7 +569,7 @@ class AgentExecutionEngine:
             except Exception as e:
                 raise e
 
-        if self.engine_name in ("verl", "trl"):
+        if self.engine_name in ("verl", "trl", "swift"):
             await self.rollout_engine.sleep()  # type: ignore
 
         self.executor.shutdown(wait=False, cancel_futures=True)

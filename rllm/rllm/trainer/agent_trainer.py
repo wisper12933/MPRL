@@ -11,11 +11,12 @@ class AgentTrainer:
     A wrapper class that allows users to easily train custom agents with custom environments
     without having to directly interact with the underlying training infrastructure.
 
-    Supports four backends:
+    Supports five backends:
     - 'verl' (default): Standard training backend supporting both workflow and agent/env classes
     - 'fireworks': Pipeline-based training backend optimized for workflow-based training
     - 'tinker': Tinker service backend (no Ray)
     - 'trl': Local HuggingFace + TRL-style updates (no Ray)
+    - 'swift': ms-swift-style vLLM concurrent/batched rollout + Accelerate training (no Ray)
     """
 
     def __init__(
@@ -29,7 +30,7 @@ class AgentTrainer:
         config: dict[str, Any] | list[str] | None = None,
         train_dataset: Dataset | None = None,
         val_dataset: Dataset | None = None,
-        backend: Literal["verl", "fireworks", "tinker", "trl"] = "verl",
+        backend: Literal["verl", "fireworks", "tinker", "trl", "swift"] = "verl",
         agent_run_func: Callable | None = None,
     ):
         """
@@ -50,7 +51,7 @@ class AgentTrainer:
             backend: Training backend to use ('verl' or 'fireworks'). Default is 'verl'
         """
         # Validate backend
-        assert backend in ["verl", "fireworks", "tinker", "trl"], f"Unsupported backend: {backend}, must be one of ['verl', 'fireworks', 'tinker', 'trl']"
+        assert backend in ["verl", "fireworks", "tinker", "trl", "swift"], f"Unsupported backend: {backend}, must be one of ['verl', 'fireworks', 'tinker', 'trl', 'swift']"
 
         self.backend = backend
 
@@ -100,6 +101,22 @@ class AgentTrainer:
             self._train_tinker()
         elif self.backend == "trl":
             self._train_trl()
+        elif self.backend == "swift":
+            self._train_swift()
+
+    def _train_swift(self):
+        from rllm.trainer.swift.swift_agent_trainer import SwiftAgentTrainer
+
+        trainer = SwiftAgentTrainer(
+            config=self.config,
+            agent_class=self.agent_class,
+            env_class=self.env_class,
+            agent_args=self.agent_args,
+            env_args=self.env_args,
+            train_dataset=self.train_dataset,
+            val_dataset=self.val_dataset,
+        )
+        trainer.fit_agent()
 
     def _train_trl(self):
         from rllm.trainer.trl.trl_agent_trainer import TrlAgentTrainer
