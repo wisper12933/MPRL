@@ -1,0 +1,58 @@
+model:
+  name: deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
+  trust_remote_code: false
+  use_lora: false
+  lora_rank: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  gradient_checkpointing: true
+  attn_implementation: null
+training:
+  group_size: 2
+  learning_rate: 1.0e-06
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-08
+  num_minibatches: 1
+  clip_ratio: 0.2
+  max_grad_norm: 1.0
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 0.95
+  norm_adv_by_std_in_grpo: false
+  grouping_level: episode
+  remove_constant_reward_groups: false
+agent:
+  max_steps: 1
+  n_parallel_agents: null
+  agent_args: {}
+env:
+  env_args: {}
+data:
+  train_files: null
+  val_files: null
+  max_prompt_length: 2048
+  max_response_length: 4096
+  train_batch_size: 2
+  val_batch_size: 4
+trainer:
+  total_epochs: 1
+  logger:
+  - console
+  project_name: rllm-trl
+  experiment_name: deepscaler-trl-smoke
+  test_freq: 20
+  save_freq: 20
+  val_before_train: true
+  default_local_dir: outputs/deepscaler-trl-smoke_checkpoints
+disable_thinking: false
+filter_token_mismatch: true
