@@ -16,16 +16,21 @@ model:
 # Rollout (sampling) — main difference vs trl backend
 rollout:
   # server | colocate | transformers
-  # server: concurrent HTTP to vLLM (recommended, like ms-swift --vllm_mode server)
+  # server: official ms-swift `swift rollout` service with weight sync
   # colocate: in-process vLLM with request batching
   # transformers: batched HF generate (no serial lock; uses output_scores)
   mode: server
-  base_url: "http://127.0.0.1:8000/v1"
+  base_url: "http://127.0.0.1:8000"
   api_key: "EMPTY"
   batch_size: 16
   batch_timeout_s: 0.05
   gpu_memory_utilization: 0.85
   tensor_parallel_size: 1
+  server_timeout_s: 900
+  group_port: 51216
+  sync_weights: true
+  # auto: full model unless model.use_lora=true, then adapter-only
+  weight_sync_mode: auto
 
 training:
   group_size: 8

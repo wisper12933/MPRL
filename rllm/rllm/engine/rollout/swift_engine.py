@@ -1,7 +1,7 @@
-"""Rollout engines for the Swift backend (ms-swift style, no Ray).
+"""Rollout engines for the Swift backend (no Ray).
 
-Modes (inspired by ms-swift GRPO):
-- ``server``: OpenAI-compatible vLLM HTTP. Concurrent async requests (true parallel).
+Modes:
+- ``server``: Official ms-swift ``swift rollout`` service with weight sync.
 - ``colocate``: In-process vLLM LLM. Requests are gathered into batches.
 - ``transformers``: Local HF generate with request batching + output_scores (no 2nd forward).
 """
@@ -54,6 +54,12 @@ class SwiftEngine(RolloutEngine):
         vllm_gpu_memory_utilization: float = 0.85,
         vllm_tensor_parallel_size: int = 1,
         api_retries: int = 3,
+        server_timeout_s: float = 900,
+        group_port: int = 51216,
+        sync_weights: bool = True,
+        weight_sync_mode: str = "auto",
+        is_main_process: bool = True,
+        sync_device: int | str | torch.device | None = None,
         **kwargs,
     ):
         self.mode = mode
@@ -72,12 +78,20 @@ class SwiftEngine(RolloutEngine):
         self.vllm_gpu_memory_utilization = vllm_gpu_memory_utilization
         self.vllm_tensor_parallel_size = vllm_tensor_parallel_size
         self.api_retries = api_retries
+        self.server_timeout_s = float(server_timeout_s)
+        self.group_port = int(group_port)
+        self.sync_weights = bool(sync_weights)
+        self.weight_sync_mode = weight_sync_mode
+        self.is_main_process = bool(is_main_process)
+        self.sync_device = sync_device
+        self._last_synced_version: int | None = None
+        self._communicator_initialized = False
 
         self._queue: asyncio.Queue[_PendingRequest | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._vllm_llm = None
-        self._openai_client = None
+        self._swift_client = None
 
         if self.mode == "server":
             self._init_server_client()
@@ -90,10 +104,23 @@ class SwiftEngine(RolloutEngine):
             raise ValueError(f"Unsupported SwiftEngine mode: {mode}. Use server|colocate|transformers")
 
     def _init_server_client(self) -> None:
-        import openai
+        try:
+            from swift.trainers.rlhf_trainer.vllm_client import VLLMClient
+        except ImportError as exc:
+            raise ImportError(
+                "mode=server requires ms-swift==3.12.3. "
+                "Install the rllm swift extra and launch the server with `swift rollout`."
+            ) from exc
 
-        self._openai_client = openai.AsyncOpenAI(base_url=self.base_url, api_key=self.api_key)
-        logger.info("SwiftEngine server mode → %s", self.base_url)
+        # swift rollout uses root endpoints such as /health/ and /infer/, not
+        # the OpenAI-compatible /v1 prefix.
+        self.base_url = self.base_url.removesuffix("/v1").rstrip("/")
+        self._swift_client = VLLMClient(
+            base_urls=[self.base_url],
+            group_ports=self.group_port,
+            connection_timeout=self.server_timeout_s,
+        )
+        logger.info("SwiftEngine official rollout server mode → %s", self.base_url)
 
     def _init_colocate_vllm(self) -> None:
         try:
@@ -119,15 +146,111 @@ class SwiftEngine(RolloutEngine):
         if self.mode == "transformers" and model is not None:
             self.device = getattr(model, "device", self.device)
 
-    def sync_weights_from_hf(self, model) -> None:
-        """Best-effort weight sync after a train step."""
+    def sync_weights_from_hf(self, model, policy_version: int | None = None) -> bool:
+        """Synchronize the current policy through the official Swift protocol.
+
+        Returns ``True`` only when this process transferred a new policy
+        version. Distributed barriers are owned by ``SwiftAgentTrainer``.
+        """
         self.set_model(model)
         if self.mode == "colocate":
             logger.warning(
                 "Colocate vLLM weight sync after train is best-effort. "
-                "Prefer mode=server (train GPUs vs infer GPUs) like ms-swift, "
+                "Prefer mode=server with `swift rollout`, "
                 "or mode=transformers for shared-weight correctness."
             )
+            return False
+        if self.mode != "server" or not self.sync_weights or not self.is_main_process:
+            return False
+        if policy_version is not None and policy_version == self._last_synced_version:
+            return False
+
+        self._ensure_communicator()
+        sync_mode = self.weight_sync_mode
+        if sync_mode == "auto":
+            sync_mode = "adapter" if hasattr(model, "peft_config") else "full"
+        if sync_mode == "adapter":
+            self._sync_adapter_weights(model)
+        elif sync_mode == "full":
+            self._sync_full_weights(model)
+        else:
+            raise ValueError(f"Unsupported rollout.weight_sync_mode={sync_mode!r}; use auto|full|adapter")
+
+        self._swift_client.reset_prefix_cache()
+        self._last_synced_version = policy_version
+        logger.info("Synchronized rollout policy version=%s mode=%s", policy_version, sync_mode)
+        return True
+
+    def _ensure_communicator(self) -> None:
+        if self._communicator_initialized:
+            return
+        engine_info = self._swift_client.get_engine_type()
+        if self.sync_device is None:
+            sync_device = torch.cuda.current_device()
+        elif isinstance(self.sync_device, torch.device):
+            sync_device = self.sync_device.index
+        else:
+            sync_device = self.sync_device
+        self._swift_client.init_communicator(device=sync_device)
+        self._communicator_initialized = True
+        logger.info(
+            "Initialized Swift rollout communicator: group_port=%s engine=%s",
+            self.group_port,
+            engine_info.get("engine_type"),
+        )
+
+    @staticmethod
+    def _clean_full_weight_name(name: str) -> str:
+        return name.removeprefix("base_model.model.").replace(".base_layer", "")
+
+    def _sync_full_weights(self, model) -> None:
+        from swift.trainers.rlhf_trainer.utils import FlattenedTensorBucket, _create_parameter_buckets
+
+        is_peft = hasattr(model, "peft_config")
+        if is_peft:
+            model.merge_adapter()
+        try:
+            named_weights = []
+            for name, parameter in model.named_parameters():
+                clean_name = self._clean_full_weight_name(name)
+                if is_peft and ("lora_" in clean_name or "modules_to_save.original_module" in clean_name):
+                    continue
+                clean_name = clean_name.replace("modules_to_save.default.", "")
+                named_weights.append((clean_name, parameter.detach()))
+
+            bucket_size_mb = int(os.getenv("SWIFT_UPDATE_WEIGHTS_BUCKET_SIZE", "512"))
+            for named_bucket in _create_parameter_buckets(named_weights, bucket_size_mb=bucket_size_mb):
+                bucket = FlattenedTensorBucket(named_tensors=named_bucket)
+                self._swift_client.update_flattened_params(bucket.get_metadata(), bucket.get_flattened_tensor())
+        finally:
+            if is_peft:
+                model.unmerge_adapter()
+
+    def _sync_adapter_weights(self, model) -> None:
+        if not hasattr(model, "peft_config"):
+            raise ValueError("adapter weight sync requires model.use_lora=true")
+        engine_info = self._swift_client.get_engine_type()
+        if not engine_info.get("enable_lora", False):
+            raise RuntimeError(
+                "The rollout server was not started with --vllm_enable_lora true, "
+                "but adapter-only synchronization was requested."
+            )
+
+        from peft import get_peft_model_state_dict
+        from swift.trainers.rlhf_trainer.utils import FlattenedTensorBucket
+
+        adapter_name = getattr(model, "active_adapter", "default")
+        if isinstance(adapter_name, list):
+            adapter_name = adapter_name[0]
+        peft_config = model.peft_config[adapter_name]
+        adapter_state = get_peft_model_state_dict(model, adapter_name=adapter_name)
+        named_weights = [(name, weight.detach()) for name, weight in adapter_state.items()]
+        bucket = FlattenedTensorBucket(named_tensors=named_weights)
+        self._swift_client.update_adapter_flattened_param(
+            peft_config,
+            bucket.get_metadata(),
+            bucket.get_flattened_tensor(),
+        )
 
     def _resolve_sampling(self, kwargs: dict, validate: bool) -> dict:
         params = self.sampling_params.copy()
@@ -151,9 +274,6 @@ class SwiftEngine(RolloutEngine):
             self._worker_task = asyncio.create_task(self._batch_worker())
 
     async def get_model_response(self, messages: list[dict], **kwargs) -> ModelOutput:
-        if self.mode == "server":
-            return await self._server_generate(messages, kwargs)
-
         loop = asyncio.get_event_loop()
         future: asyncio.Future = loop.create_future()
         prompt_text = self.chat_parser.parse(messages, add_generation_prompt=True, is_first_msg=True)
@@ -188,7 +308,9 @@ class SwiftEngine(RolloutEngine):
                 batch.append(item)
 
             try:
-                if self.mode == "colocate":
+                if self.mode == "server":
+                    outputs = await self._server_generate_batch(batch)
+                elif self.mode == "colocate":
                     outputs = await self._colocate_generate_batch(batch)
                 else:
                     outputs = await self._transformers_generate_batch(batch)
@@ -200,55 +322,87 @@ class SwiftEngine(RolloutEngine):
                     if not req.future.done():
                         req.future.set_exception(exc)
 
-    async def _server_generate(self, messages: list[dict], kwargs: dict) -> ModelOutput:
-        validate = kwargs.get("validate", False)
-        enforce = kwargs.get("enforce_max_prompt_length", True)
-        gen = self._resolve_sampling(kwargs, validate)
-        prompt_text = self.chat_parser.parse(messages, add_generation_prompt=True, is_first_msg=True)
-        prompt_ids = self.tokenizer.encode(prompt_text, add_special_tokens=False)
-        if enforce and len(prompt_ids) > self.max_prompt_length:
-            raise TerminationEvent(TerminationReason.MAX_PROMPT_LENGTH_EXCEEDED)
+    async def _server_generate_batch(self, batch: list[_PendingRequest]) -> list[ModelOutput]:
+        loop = asyncio.get_event_loop()
 
-        retries = self.api_retries
-        last_err: Exception | None = None
-        while retries > 0:
-            try:
-                response = await self._openai_client.completions.create(
-                    model=self.model_name,
-                    prompt=prompt_text,
-                    max_tokens=gen["max_tokens"],
-                    temperature=gen["temperature"] if gen["do_sample"] else 0.0,
-                    top_p=gen["top_p"],
-                    logprobs=1,
-                    timeout=3600,
-                )
-                choice = response.choices[0]
-                text = choice.text or ""
-                completion_ids = self.tokenizer.encode(text, add_special_tokens=False)
-                logprobs: list[float] = []
-                if choice.logprobs is not None and choice.logprobs.token_logprobs is not None:
-                    logprobs = [float(x) if x is not None else 0.0 for x in choice.logprobs.token_logprobs]
-                if len(logprobs) != len(completion_ids):
-                    if len(logprobs) > len(completion_ids):
-                        logprobs = logprobs[: len(completion_ids)]
-                    else:
-                        logprobs = logprobs + [0.0] * (len(completion_ids) - len(logprobs))
-                finish = choice.finish_reason or "stop"
-                return ModelOutput(
-                    text=text,
-                    content=text,
-                    prompt_ids=prompt_ids,
-                    completion_ids=completion_ids,
-                    logprobs=logprobs,
-                    prompt_length=len(prompt_ids),
-                    completion_length=len(completion_ids),
-                    finish_reason=finish,
-                )
-            except Exception as exc:
-                last_err = exc
-                retries -= 1
-                await asyncio.sleep(1)
-        raise RuntimeError(f"SwiftEngine server generate failed: {last_err}") from last_err
+        def _run() -> list[ModelOutput]:
+            # A queue batch uses one sampling configuration. Agent batches in
+            # this backend are homogeneous, as are validation batches.
+            gen = self._resolve_sampling(batch[0].kwargs, batch[0].kwargs.get("validate", False))
+            infer_requests = [{"messages": req.messages} for req in batch]
+            request_config = {
+                "max_tokens": gen["max_tokens"],
+                "temperature": gen["temperature"] if gen["do_sample"] else 0.0,
+                "top_p": gen["top_p"],
+                "logprobs": True,
+                "top_logprobs": 1,
+                "return_details": True,
+            }
+
+            retries = self.api_retries
+            last_err: Exception | None = None
+            while retries > 0:
+                try:
+                    results = self._swift_client.infer(
+                        infer_requests,
+                        request_config,
+                        use_tqdm=False,
+                    )
+                    if len(results) != len(batch):
+                        raise RuntimeError(f"swift rollout returned {len(results)} results for {len(batch)} requests")
+                    return [self._convert_server_output(req, result) for req, result in zip(batch, results, strict=True)]
+                except Exception as exc:
+                    last_err = exc
+                    retries -= 1
+                    if retries:
+                        import time
+
+                        time.sleep(1)
+            raise RuntimeError(f"SwiftEngine server generate failed: {last_err}") from last_err
+
+        return await loop.run_in_executor(self._executor, _run)
+
+    def _convert_server_output(self, req: _PendingRequest, result) -> ModelOutput:
+        rollout_response = getattr(result, "response", result)
+        choices = getattr(rollout_response, "choices", None)
+        if not choices:
+            raise RuntimeError(f"swift rollout returned no choices: {result!r}")
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        text = getattr(message, "content", None) if message is not None else getattr(choice, "text", "")
+        text = text or ""
+
+        response_token_ids = getattr(result, "response_token_ids", None) or []
+        completion_ids = list(response_token_ids[-1]) if response_token_ids else list(getattr(choice, "token_ids", None) or [])
+        if not completion_ids:
+            completion_ids = self.tokenizer.encode(text, add_special_tokens=False)
+
+        rollout_logprobs = getattr(result, "rollout_logprobs", None) or []
+        logprobs = list(rollout_logprobs[-1]) if rollout_logprobs else self._choice_logprobs(choice)
+        logprobs = (logprobs + [0.0] * len(completion_ids))[: len(completion_ids)]
+        finish = getattr(choice, "finish_reason", None) or "stop"
+        return ModelOutput(
+            text=text,
+            content=text,
+            prompt_ids=req.prompt_ids,
+            completion_ids=completion_ids,
+            logprobs=logprobs,
+            prompt_length=len(req.prompt_ids),
+            completion_length=len(completion_ids),
+            finish_reason=finish,
+        )
+
+    @staticmethod
+    def _choice_logprobs(choice) -> list[float]:
+        payload = getattr(choice, "logprobs", None)
+        if not payload:
+            return []
+        content = payload.get("content", []) if isinstance(payload, dict) else getattr(payload, "content", [])
+        values = []
+        for item in content:
+            value = item.get("logprob") if isinstance(item, dict) else getattr(item, "logprob", None)
+            values.append(float(value) if value is not None else 0.0)
+        return values
 
     async def _colocate_generate_batch(self, batch: list[_PendingRequest]) -> list[ModelOutput]:
         from vllm import SamplingParams
@@ -386,4 +540,7 @@ class SwiftEngine(RolloutEngine):
             except Exception:
                 self._worker_task.cancel()
             self._worker_task = None
+        if self._communicator_initialized and self._swift_client is not None:
+            await asyncio.get_event_loop().run_in_executor(self._executor, self._swift_client.close_communicator)
+            self._communicator_initialized = False
         self._executor.shutdown(wait=False)

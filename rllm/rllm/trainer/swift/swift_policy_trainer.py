@@ -35,6 +35,8 @@ class SwiftPolicyTrainer:
         self.tokenizer = None
         self.optimizer = None
         self.accelerator: Accelerator | None = None
+        self.policy_version = 0
+        self._resume_optimizer_state = None
 
     def initialize(self, resume_from_checkpoint: bool = True) -> int:
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
@@ -78,19 +80,23 @@ class SwiftPolicyTrainer:
         if self.config.model.get("gradient_checkpointing", False):
             self.model.gradient_checkpointing_enable()
 
-        lr = self.config.training.learning_rate
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(),
-            lr=lr,
-            betas=(self.config.training.beta1, self.config.training.beta2),
-            eps=self.config.training.eps,
-        )
-
         start_batch = 0
         if resume_from_checkpoint:
             start_batch = self._maybe_resume()
 
+        lr = self.config.training.learning_rate
+        self.optimizer = torch.optim.AdamW(
+            (parameter for parameter in self.model.parameters() if parameter.requires_grad),
+            lr=lr,
+            betas=(self.config.training.beta1, self.config.training.beta2),
+            eps=self.config.training.eps,
+        )
+        if self._resume_optimizer_state is not None:
+            self.optimizer.load_state_dict(self._resume_optimizer_state)
+            self._resume_optimizer_state = None
+
         self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+        self.policy_version = start_batch
         if self.accelerator.is_main_process:
             logger.info(
                 "Initialized Swift policy trainer: num_processes=%s, device=%s",
@@ -135,7 +141,7 @@ class SwiftPolicyTrainer:
             self.model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=self.model.dtype)
         optim_path = os.path.join(model_path, "optimizer.pt")
         if os.path.exists(optim_path):
-            self.optimizer.load_state_dict(torch.load(optim_path, map_location="cpu"))
+            self._resume_optimizer_state = torch.load(optim_path, map_location="cpu")
         return batch + 1
 
     def save_checkpoint(self, batch_idx: int) -> None:
@@ -210,6 +216,7 @@ class SwiftPolicyTrainer:
         total_metrics = dict(grouping_metrics)
         num_minibatches = max(1, self.config.training.get("num_minibatches", 1))
         chunk_size = max(1, len(samples) // num_minibatches)
+        updated = False
 
         for start in range(0, len(samples), chunk_size):
             chunk = samples[start : start + chunk_size]
@@ -225,8 +232,11 @@ class SwiftPolicyTrainer:
                     )
                     total_metrics["loss/grad_norm"] = float(grad_norm)
                 self.optimizer.step()
+                updated = True
             total_metrics.update(step_metrics)
 
+        if updated:
+            self.policy_version += 1
         return total_metrics
 
     def get_model(self):

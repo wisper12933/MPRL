@@ -124,6 +124,12 @@ class SwiftAgentTrainer:
                 "batch_timeout_s": rollout_cfg.get("batch_timeout_s", 0.05),
                 "vllm_gpu_memory_utilization": rollout_cfg.get("gpu_memory_utilization", 0.85),
                 "vllm_tensor_parallel_size": rollout_cfg.get("tensor_parallel_size", 1),
+                "server_timeout_s": rollout_cfg.get("server_timeout_s", 900),
+                "group_port": rollout_cfg.get("group_port", 51216),
+                "sync_weights": rollout_cfg.get("sync_weights", True),
+                "weight_sync_mode": rollout_cfg.get("weight_sync_mode", "auto"),
+                "is_main_process": self.trainer.is_main_process,
+                "sync_device": self.trainer.device,
             },
         )
         self.num_train_batches = len(self.train_dataloader) if self.train_dataloader else None
@@ -227,16 +233,38 @@ class SwiftAgentTrainer:
         if batch_idx % self.config.trainer.save_freq != 0:
             self.trainer.save_checkpoint(batch_idx)
         self.trainer.wait_for_everyone()
+        await self.agent_execution_engine.rollout_engine.close()
         if tracking_logger is not None:
             del tracking_logger
 
     def _sync_rollout_model(self):
         engine = self.agent_execution_engine.rollout_engine
         model = self.trainer.get_model()
-        if hasattr(engine, "sync_weights_from_hf"):
-            engine.sync_weights_from_hf(model)
-        else:
-            engine.set_model(model)
+        self.trainer.wait_for_everyone()
+        if getattr(engine, "mode", None) != "server":
+            if hasattr(engine, "sync_weights_from_hf"):
+                engine.sync_weights_from_hf(model, policy_version=self.trainer.policy_version)
+            else:
+                engine.set_model(model)
+            self.trainer.wait_for_everyone()
+            return
+
+        sync_error = [None]
+        if self.trainer.is_main_process:
+            try:
+                if hasattr(engine, "sync_weights_from_hf"):
+                    engine.sync_weights_from_hf(model, policy_version=self.trainer.policy_version)
+                else:
+                    engine.set_model(model)
+            except Exception as exc:
+                logger.exception("Rollout weight synchronization failed")
+                sync_error[0] = f"{type(exc).__name__}: {exc}"
+
+        if self.trainer.num_processes > 1:
+            torch.distributed.broadcast_object_list(sync_error, src=0)
+        if sync_error[0] is not None:
+            raise RuntimeError(f"Rollout weight synchronization failed on rank 0: {sync_error[0]}")
+        self.trainer.wait_for_everyone()
 
     def init_envs_and_agents(self, batch):
         env_args = batch
