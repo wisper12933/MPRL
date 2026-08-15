@@ -14,6 +14,7 @@ class PlannedInteractAgent(InteractAgent):
         self,
         base_prompt_path: str,
         metaplan_prompt_path: str,
+        planning_enabled: bool = True,
         planning_max_tokens: int = 1024,
         planning_temperature: float = 0.1,
         planning_top_p: float = 0.9,
@@ -24,6 +25,7 @@ class PlannedInteractAgent(InteractAgent):
         self.metaplan_prompt_template = prompt_path.read_text(encoding="utf-8")
         if "{{TASK}}" not in self.metaplan_prompt_template:
             raise ValueError(f"Meta-plan prompt must contain {{{{TASK}}}}: {prompt_path}")
+        self.planning_enabled = bool(planning_enabled)
         self.planning_max_tokens = int(planning_max_tokens)
         self.planning_temperature = float(planning_temperature)
         self.planning_top_p = float(planning_top_p)

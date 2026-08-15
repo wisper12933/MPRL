@@ -69,6 +69,7 @@ def main(config: DictConfig) -> None:
     agent_args = {
         "base_prompt_path": str(spec.instruction_path),
         "metaplan_prompt_path": str(spec.metaplan_prompt_path),
+        "planning_enabled": bool(config.planning.enabled),
         "planning_max_tokens": int(config.planning.max_tokens),
         "planning_temperature": float(config.planning.temperature),
         "planning_top_p": float(config.planning.top_p),
@@ -89,6 +90,7 @@ def main(config: DictConfig) -> None:
                 "validation_tasks": len(val_dataset),
                 "max_steps": max_steps,
                 "n_parallel_agents": n_parallel_agents,
+                "planning_enabled": bool(config.planning.enabled),
                 "interaction_prompt": str(spec.instruction_path),
                 "metaplan_prompt": str(spec.metaplan_prompt_path),
                 "env_args": env_args,

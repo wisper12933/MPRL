@@ -51,6 +51,25 @@ def test_context_only_plan_is_injected_once_and_not_added_as_step(tmp_path):
         agent.inject_plan("another plan")
 
 
+def test_explicitly_disabled_planning_skips_generation_and_injection(tmp_path):
+    agent = _agent(tmp_path)
+    agent.planning_enabled = False
+    agent.update_from_env("Find the target.", reward=0.0, done=False, info={})
+    initial_messages = list(agent.chat_completions)
+    engine = object.__new__(AgentExecutionEngine)
+
+    async def unexpected_response(*args, **kwargs):
+        raise AssertionError("Planning generation must not run when explicitly disabled")
+
+    engine.get_model_response = unexpected_response
+    elapsed = asyncio.run(engine._run_initial_planning(agent, "Find the target.", {}, "episode-1"))
+
+    assert elapsed == 0.0
+    assert agent.generated_plan is None
+    assert agent.chat_completions == initial_messages
+    assert "metaplan" not in agent.trajectory.info
+
+
 def test_planning_and_action_requests_get_different_batch_keys():
     engine = object.__new__(SwiftEngine)
     engine.sampling_params = {"temperature": 0.6, "top_p": 0.95, "max_tokens": 512}

@@ -43,6 +43,7 @@ TRAIN_LIMIT="${TRAIN_LIMIT:-0}"
 VAL_LIMIT="${VAL_LIMIT:-16}"
 MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-6144}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-4096}"
+PLANNING_ENABLED="${PLANNING_ENABLED:-true}"
 PLANNING_MAX_TOKENS="${PLANNING_MAX_TOKENS:-1024}"
 GROUP_SIZE="${GROUP_SIZE:-8}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"
@@ -82,6 +83,10 @@ if [[ ! -f "$ADAPTER_PATH/adapter_config.json" ]]; then
     echo "Adapter not found: $ADAPTER_PATH" >&2
     exit 1
 fi
+case "${PLANNING_ENABLED,,}" in
+    true|false) ;;
+    *) echo "PLANNING_ENABLED must be true or false, got: $PLANNING_ENABLED" >&2; exit 2 ;;
+esac
 
 echo "==== Checking existing Swift rollout server ===="
 "$PYTHON_BIN" - "$VLLM_URL" <<'PY'
@@ -125,6 +130,7 @@ echo "train_gpus=$TRAIN_GPUS"
 echo "vllm_url=$VLLM_URL"
 echo "max_steps=$MAX_STEPS"
 echo "n_parallel_agents=$N_PARALLEL_AGENTS"
+echo "planning_enabled=$PLANNING_ENABLED"
 echo "train_limit=$TRAIN_LIMIT val_limit=$VAL_LIMIT"
 echo "checkpoint_dir=$CHECKPOINT_DIR"
 
@@ -148,6 +154,7 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "$ACCELERATE_BIN" launch \
     rollout.server_timeout_s="$SERVER_TIMEOUT_S" \
     rollout.sync_weights=true \
     rollout.weight_sync_mode=auto \
+    planning.enabled="$PLANNING_ENABLED" \
     planning.max_tokens="$PLANNING_MAX_TOKENS" \
     training.group_size="$GROUP_SIZE" \
     training.num_minibatches="$NUM_MINIBATCHES" \

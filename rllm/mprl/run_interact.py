@@ -38,6 +38,12 @@ def parse_args():
     parser.add_argument("--test-index-path", default=None, help="Override the default test index JSON path for the selected task.")
     parser.add_argument("--prompt-path", default=None, help="Override the default prompt file path for the selected task.")
     parser.add_argument("--metaplan-prompt-path", default=None, help="Override the task-specific meta-plan template.")
+    parser.add_argument(
+        "--planning",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Generate and inject a context-only meta-plan before interaction (default: enabled).",
+    )
     parser.add_argument("--planning-max-tokens", type=int, default=1024)
     parser.add_argument("--planning-temperature", type=float, default=0.1)
     parser.add_argument("--planning-top-p", type=float, default=0.9)
@@ -100,6 +106,7 @@ def main():
     agent_args = {
         "base_prompt_path": str(prompt_path),
         "metaplan_prompt_path": str(metaplan_prompt_path),
+        "planning_enabled": args.planning,
         "planning_max_tokens": args.planning_max_tokens,
         "planning_temperature": args.planning_temperature,
         "planning_top_p": args.planning_top_p,
@@ -124,6 +131,7 @@ def main():
         "env_class": env_class.__name__,
         "prompt_path": str(prompt_path),
         "metaplan_prompt_path": str(metaplan_prompt_path),
+        "planning_enabled": args.planning,
         "test_index_path": str(index_path),
         "base_model": args.base_model,
         "tokenizer_path": tokenizer_path,

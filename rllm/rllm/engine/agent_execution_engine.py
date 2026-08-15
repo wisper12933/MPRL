@@ -182,6 +182,8 @@ class AgentExecutionEngine:
 
     async def _run_initial_planning(self, agent, observation, info, application_id, **kwargs) -> float:
         """Run an optional context-only plan without creating a trainable step."""
+        if not getattr(agent, "planning_enabled", True):
+            return 0.0
         build_messages = getattr(agent, "build_planning_messages", None)
         inject_plan = getattr(agent, "inject_plan", None)
         if not callable(build_messages) or not callable(inject_plan):
