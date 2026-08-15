@@ -1,0 +1,23 @@
+Please generate a step-by-step workflow for a house holding task:
+<task>
+{{TASK}}
+</task>
+
+The action list you can take:
+1. go to {recep}
+2. take {obj} from {recep}
+3. put {obj} in/on {recep}
+4. open {recep}
+5. close {recep}
+6. toggle {obj} {recep}
+7. clean {obj} with {recep}
+8. heat {obj} with {recep}
+9. cool {obj} with {recep}
+where {obj} and {recep} correspond to objects and receptacles.
+
+The generated workflow must use this format:
+<workflow>
+Step 1: ...
+Step 2: ...
+...
+</workflow>

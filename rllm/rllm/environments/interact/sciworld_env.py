@@ -1,5 +1,5 @@
-import threading
 import multiprocessing as mp
+import threading
 
 from scienceworld import ScienceWorldEnv
 
@@ -157,8 +157,11 @@ class SciWorldEnv(BaseEnv):
                 return observation, 0.0, self.done, {}
             
             self.parent_conn.send(("step", action))
-            observation, _, self.done, info = self.parent_conn.recv()
-            observation, reward = f"Observation: {observation}", info["raw_score"]
+            observation, reward, self.done, info = self.parent_conn.recv()
+            # The patched ScienceWorld API returns the score delta. rLLM sums
+            # step rewards into the trajectory reward, so returning raw_score
+            # here would repeatedly count the cumulative score.
+            observation = f"Observation: {observation}"
             
             if "No known action matches that input" in observation:
                 self.error_steps += 1
@@ -176,7 +179,7 @@ class SciWorldEnv(BaseEnv):
         try:
             self.parent_conn.send(("close", None))
             self.worker_process.join(timeout=1)
-        except:
+        except Exception:
             pass
     
     @staticmethod

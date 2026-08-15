@@ -273,6 +273,15 @@ class SwiftEngine(RolloutEngine):
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(self._batch_worker())
 
+    def _request_batch_key(self, request: _PendingRequest) -> tuple:
+        generation = self._resolve_sampling(request.kwargs, request.kwargs.get("validate", False))
+        return (
+            generation["max_tokens"],
+            generation["temperature"],
+            generation["top_p"],
+            generation["do_sample"],
+        )
+
     async def get_model_response(self, messages: list[dict], **kwargs) -> ModelOutput:
         loop = asyncio.get_event_loop()
         future: asyncio.Future = loop.create_future()
@@ -293,6 +302,7 @@ class SwiftEngine(RolloutEngine):
             if first is None:
                 return
             batch = [first]
+            batch_key = self._request_batch_key(first)
             deadline = asyncio.get_event_loop().time() + self.batch_timeout_s
             while len(batch) < self.batch_size:
                 timeout = deadline - asyncio.get_event_loop().time()
@@ -304,6 +314,12 @@ class SwiftEngine(RolloutEngine):
                     break
                 if item is None:
                     await self._queue.put(None)
+                    break
+                # Planning and action requests use different generation
+                # settings. Never let one request silently impose its sampling
+                # configuration on the rest of the queue batch.
+                if self._request_batch_key(item) != batch_key:
+                    await self._queue.put(item)
                     break
                 batch.append(item)
 

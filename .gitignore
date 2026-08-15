@@ -143,3 +143,7 @@ envs/webshop/search_engine/indexes
 data/alfworld_data
 uv/*
 
+# Runtime artifacts
+rllm/logs/
+rllm/outputs/
+rllm/wandb/

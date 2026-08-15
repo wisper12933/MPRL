@@ -180,6 +180,21 @@ class AgentExecutionEngine:
         else:
             raise NotImplementedError(f"Engine type '{self.engine_name}' not supported")
 
+    async def _run_initial_planning(self, agent, observation, info, application_id, **kwargs) -> float:
+        """Run an optional context-only plan without creating a trainable step."""
+        build_messages = getattr(agent, "build_planning_messages", None)
+        inject_plan = getattr(agent, "inject_plan", None)
+        if not callable(build_messages) or not callable(inject_plan):
+            return 0.0
+
+        planning_messages = build_messages(observation, info)
+        planning_kwargs = dict(kwargs)
+        planning_kwargs.update(getattr(agent, "planning_sampling_params", {}))
+        start_time = time.time()
+        model_output = await self.get_model_response(planning_messages, application_id, **planning_kwargs)
+        inject_plan(model_output.text)
+        return time.time() - start_time
+
     def update_envs_and_agents(self, envs, agents):
         """
         Update the environments and agents.
@@ -230,6 +245,9 @@ class AgentExecutionEngine:
             done=False,
             info=info,
         )
+        planning_time = await self._run_initial_planning(agent, observation, info, application_id, **kwargs)
+        llm_time += planning_time
+        total_time += planning_time
         messages = agent.chat_completions
         prompt_tokens, _ = convert_messages_to_tokens_and_masks(messages, tokenizer=self.tokenizer, parser=self.chat_parser, contains_first_msg=True, contains_generation_msg=True)
         prompt_token_len = len(prompt_tokens)
@@ -426,6 +444,7 @@ class AgentExecutionEngine:
                     "env_time": env_time,
                     # Time to calculate response tokens
                     "llm_time": llm_time,
+                    "planning_time": planning_time,
                     # Total time spent in the trajectory
                     "total_time": total_time,
                     "token_mismatch": 0.0 if is_valid_trajectory else 1.0,
@@ -440,6 +459,7 @@ class AgentExecutionEngine:
                 "trajectory_reward": trajectory.reward,
                 "idx": env.idx,
                 "mc_returns": [step.mc_return for step in trajectory.steps][: len(episode_steps)],
+                "metaplan": getattr(agent, "generated_plan", None),
             }
             return steps_result
         else:

@@ -64,25 +64,18 @@ class SwiftPolicyTrainer:
             attn_implementation=self.config.model.get("attn_implementation", None),
         )
 
-        if self.config.model.get("use_lora", False):
-            from peft import LoraConfig, get_peft_model
-
-            lora_config = LoraConfig(
-                r=self.config.model.get("lora_rank", 32),
-                lora_alpha=self.config.model.get("lora_alpha", 64),
-                target_modules=self.config.model.get("lora_target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
-                lora_dropout=self.config.model.get("lora_dropout", 0.05),
-                bias="none",
-                task_type="CAUSAL_LM",
-            )
-            self.model = get_peft_model(self.model, lora_config)
-
-        if self.config.model.get("gradient_checkpointing", False):
-            self.model.gradient_checkpointing_enable()
+        self.model = self._apply_lora(self.model)
 
         start_batch = 0
         if resume_from_checkpoint:
             start_batch = self._maybe_resume()
+
+        num_trainable = sum(parameter.numel() for parameter in self.model.parameters() if parameter.requires_grad)
+        if num_trainable == 0:
+            raise RuntimeError("The policy has no trainable parameters; check model.adapter_path and model.use_lora.")
+
+        if self.config.model.get("gradient_checkpointing", False):
+            self._enable_gradient_checkpointing()
 
         lr = self.config.training.learning_rate
         self.optimizer = torch.optim.AdamW(
@@ -99,11 +92,45 @@ class SwiftPolicyTrainer:
         self.policy_version = start_batch
         if self.accelerator.is_main_process:
             logger.info(
-                "Initialized Swift policy trainer: num_processes=%s, device=%s",
+                "Initialized Swift policy trainer: num_processes=%s, device=%s, trainable_params=%s",
                 self.accelerator.num_processes,
                 self.accelerator.device,
+                num_trainable,
             )
         return start_batch
+
+    def _enable_gradient_checkpointing(self) -> None:
+        # Reentrant checkpointing needs the block inputs to require grad. With
+        # LoRA every base weight is frozen, so the graph would be cut and the
+        # loss would arrive at backward() without a grad_fn.
+        self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        base_model = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
+        base_model.enable_input_require_grads()
+        base_model.config.use_cache = False
+
+    def _apply_lora(self, model):
+        adapter_path = self.config.model.get("adapter_path", None)
+        if adapter_path:
+            from peft import PeftModel
+
+            if not os.path.isdir(adapter_path):
+                raise FileNotFoundError(f"Initial LoRA adapter does not exist: {adapter_path}")
+            model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
+            if self.accelerator is None or self.accelerator.is_main_process:
+                logger.info("Loaded trainable initial LoRA adapter from %s", adapter_path)
+        elif self.config.model.get("use_lora", False):
+            from peft import LoraConfig, get_peft_model
+
+            lora_config = LoraConfig(
+                r=self.config.model.get("lora_rank", 32),
+                lora_alpha=self.config.model.get("lora_alpha", 64),
+                target_modules=self.config.model.get("lora_target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+                lora_dropout=self.config.model.get("lora_dropout", 0.05),
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
+        return model
 
     @property
     def device(self) -> torch.device:
