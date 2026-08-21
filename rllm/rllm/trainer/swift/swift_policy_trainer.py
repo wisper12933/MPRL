@@ -225,6 +225,32 @@ class SwiftPolicyTrainer:
         }
         return loss, metrics
 
+    @staticmethod
+    def _split_into_exact_minibatches(samples: list, num_minibatches: int) -> list[list]:
+        """Split samples into exactly N non-empty chunks.
+
+        DDP requires every rank to execute the same number of forward/backward
+        collectives. Local rollout lengths can produce different sample counts,
+        so a ceil/floor chunk size is not sufficient.
+        """
+        if num_minibatches < 1 or num_minibatches > len(samples):
+            raise ValueError("num_minibatches must be between 1 and len(samples)")
+        base_size, remainder = divmod(len(samples), num_minibatches)
+        chunks = []
+        start = 0
+        for index in range(num_minibatches):
+            chunk_size = base_size + (1 if index < remainder else 0)
+            chunks.append(samples[start : start + chunk_size])
+            start += chunk_size
+        return chunks
+
+    def _distributed_min_sample_count(self, local_count: int) -> int:
+        if self.num_processes == 1:
+            return local_count
+        count = torch.tensor(local_count, device=self.device, dtype=torch.int64)
+        torch.distributed.all_reduce(count, op=torch.distributed.ReduceOp.MIN)
+        return int(count.item())
+
     def step(self, episodes: list, learning_rate: float | None = None) -> dict:
         if learning_rate is not None:
             for group in self.optimizer.param_groups:
@@ -236,17 +262,21 @@ class SwiftPolicyTrainer:
             self.trajectory_filter,
             self.config.algorithm,
         )
-        if not samples:
+        min_sample_count = self._distributed_min_sample_count(len(samples))
+        grouping_metrics["grouping/min_samples_across_ranks"] = min_sample_count
+        if min_sample_count == 0:
+            logger.warning("At least one DDP rank has no training samples; skipping this update on every rank.")
             return grouping_metrics
 
         self.model.train()
         total_metrics = dict(grouping_metrics)
-        num_minibatches = max(1, self.config.training.get("num_minibatches", 1))
-        chunk_size = max(1, len(samples) // num_minibatches)
+        requested_minibatches = max(1, self.config.training.get("num_minibatches", 1))
+        num_minibatches = min(requested_minibatches, min_sample_count)
+        minibatches = self._split_into_exact_minibatches(samples, num_minibatches)
+        total_metrics["training/num_minibatches"] = num_minibatches
         updated = False
 
-        for start in range(0, len(samples), chunk_size):
-            chunk = samples[start : start + chunk_size]
+        for chunk in minibatches:
             batch = self._collate_samples(chunk)
             self.optimizer.zero_grad()
             with self.accelerator.accumulate(self.model):

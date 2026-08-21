@@ -15,6 +15,16 @@ from rllm.environments.interact.sciworld_env import SciWorldEnv, _ScienceWorldPo
 from rllm.trainer.swift.swift_policy_trainer import SwiftPolicyTrainer
 
 
+def test_swift_minibatches_have_fixed_collective_count_across_ranks():
+    rank_zero = SwiftPolicyTrainer._split_into_exact_minibatches(list(range(8)), 8)
+    rank_one = SwiftPolicyTrainer._split_into_exact_minibatches(list(range(11)), 8)
+
+    assert len(rank_zero) == len(rank_one) == 8
+    assert all(rank_zero)
+    assert all(rank_one)
+    assert [item for chunk in rank_one for item in chunk] == list(range(11))
+
+
 def _agent(tmp_path: Path) -> PlannedInteractAgent:
     interaction = tmp_path / "interaction.txt"
     metaplan = tmp_path / "metaplan.txt"

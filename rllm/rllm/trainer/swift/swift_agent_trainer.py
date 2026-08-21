@@ -249,7 +249,7 @@ class SwiftAgentTrainer:
             self.trainer.wait_for_everyone()
             return
 
-        sync_error = [None]
+        sync_error = None
         if self.trainer.is_main_process:
             try:
                 if hasattr(engine, "sync_weights_from_hf"):
@@ -258,12 +258,24 @@ class SwiftAgentTrainer:
                     engine.set_model(model)
             except Exception as exc:
                 logger.exception("Rollout weight synchronization failed")
-                sync_error[0] = f"{type(exc).__name__}: {exc}"
+                sync_error = f"{type(exc).__name__}: {exc}"
 
         if self.trainer.num_processes > 1:
-            torch.distributed.broadcast_object_list(sync_error, src=0)
-        if sync_error[0] is not None:
-            raise RuntimeError(f"Rollout weight synchronization failed on rank 0: {sync_error[0]}")
+            # Keep this collective fixed-size. Object broadcasts first transmit
+            # a serialized length; if an earlier DDP collective is mismatched,
+            # that length can be decoded as an exabyte allocation.
+            failed = torch.tensor(
+                int(sync_error is not None),
+                device=self.trainer.device,
+                dtype=torch.int32,
+            )
+            torch.distributed.broadcast(failed, src=0)
+            sync_failed = bool(failed.item())
+        else:
+            sync_failed = sync_error is not None
+        if sync_failed:
+            detail = sync_error if self.trainer.is_main_process else "see the rank 0 log"
+            raise RuntimeError(f"Rollout weight synchronization failed on rank 0: {detail}")
         self.trainer.wait_for_everyone()
 
     def init_envs_and_agents(self, batch):
