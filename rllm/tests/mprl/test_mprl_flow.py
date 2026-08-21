@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,7 +11,7 @@ from mprl.planned_interact_agent import PlannedInteractAgent
 from mprl.task_specs import TASK_SPECS, load_task_dataset, normalize_tasks
 from rllm.engine.agent_execution_engine import AgentExecutionEngine
 from rllm.engine.rollout.swift_engine import SwiftEngine
-from rllm.environments.interact.sciworld_env import SciWorldEnv
+from rllm.environments.interact.sciworld_env import SciWorldEnv, _ScienceWorldPortLogFilter
 from rllm.trainer.swift.swift_policy_trainer import SwiftPolicyTrainer
 
 
@@ -178,3 +179,18 @@ def test_sciworld_returns_delta_reward_instead_of_cumulative_score():
     assert reward == 0.25
     assert info["raw_score"] == 0.75
     assert done is False
+
+
+def test_sciworld_port_log_filter_repairs_third_party_format_string():
+    record = logging.LogRecord(
+        name="scienceworld.scienceworld",
+        level=logging.INFO,
+        pathname="scienceworld.py",
+        lineno=51,
+        msg="ScienceWorld server running on port",
+        args=(43419,),
+        exc_info=None,
+    )
+
+    assert _ScienceWorldPortLogFilter().filter(record)
+    assert record.getMessage() == "ScienceWorld server running on port 43419"

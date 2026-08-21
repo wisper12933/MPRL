@@ -1,3 +1,4 @@
+import logging
 import multiprocessing as mp
 import threading
 
@@ -6,8 +7,28 @@ from scienceworld import ScienceWorldEnv
 from rllm.environments.base.base_env import BaseEnv
 
 
+class _ScienceWorldPortLogFilter(logging.Filter):
+    """Repair a malformed logger.info call in scienceworld 1.1.x."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name == "scienceworld.scienceworld"
+            and record.msg == "ScienceWorld server running on port"
+            and len(record.args) == 1
+        ):
+            record.msg = "ScienceWorld server running on port %s"
+        return True
+
+
+def _patch_scienceworld_logging() -> None:
+    logger = logging.getLogger("scienceworld.scienceworld")
+    if not any(isinstance(log_filter, _ScienceWorldPortLogFilter) for log_filter in logger.filters):
+        logger.addFilter(_ScienceWorldPortLogFilter())
+
+
 # Process worker function to manage the SciWorld environment
 def _env_worker(conn, server_path, max_turns):
+    _patch_scienceworld_logging()
     # Create the environment factory
     env = ScienceWorldEnv("", serverPath=server_path, envStepLimit=max_turns)
 

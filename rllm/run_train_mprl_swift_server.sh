@@ -65,9 +65,23 @@ export WANDB_DISABLE_SERVICE="${WANDB_DISABLE_SERVICE:-true}"
 unset WANDB_REQUIRE_SERVICE
 export WANDB_START_METHOD="${WANDB_START_METHOD:-thread}"
 
-JAVA_HOME="${JAVA_HOME:-/opt/tiger/jdk/jdk11}"
-export JAVA_HOME JDK_HOME="${JDK_HOME:-$JAVA_HOME}" JRE_HOME="${JRE_HOME:-$JAVA_HOME}"
-export JVM_PATH="${JVM_PATH:-$JAVA_HOME/lib/server/libjvm.so}"
+DEFAULT_JAVA_HOME="/opt/tiger/jdk/jdk11"
+JAVA_HOME="${MPRL_JAVA_HOME:-$DEFAULT_JAVA_HOME}"
+if [[ ! -x "$JAVA_HOME/bin/java" ]]; then
+    echo "Java executable not found: $JAVA_HOME/bin/java" >&2
+    exit 1
+fi
+
+JVM_PATH="${MPRL_JVM_PATH:-$JAVA_HOME/lib/server/libjvm.so}"
+if [[ ! -f "$JVM_PATH" ]]; then
+    echo "JVM library not found: $JVM_PATH" >&2
+    exit 1
+fi
+
+export JAVA_HOME
+export JDK_HOME="$JAVA_HOME"
+export JRE_HOME="$JAVA_HOME"
+export JVM_PATH
 export PATH="$JAVA_HOME/bin:$PATH"
 export LD_LIBRARY_PATH="$JAVA_HOME/lib/server:${LD_LIBRARY_PATH:-}"
 
