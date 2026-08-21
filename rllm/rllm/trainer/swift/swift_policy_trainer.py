@@ -1,0 +1,311 @@
+"""Policy training for Swift-based (ms-swift style) agent RL (no Ray).
+
+Supports single-GPU and multi-GPU via HuggingFace Accelerate (DDP).
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import torch
+import torch.nn.functional as F
+from accelerate import Accelerator
+from accelerate.utils import DistributedDataParallelKwargs
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from rllm.trainer.swift.swift_data_processor import (
+    SwiftAdvantageComputer,
+    SwiftTrainingSample,
+    SwiftTrajectoryFilter,
+    process_episodes,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class SwiftPolicyTrainer:
+    """Loads a local HF policy and applies GRPO-style policy-gradient updates."""
+
+    def __init__(self, config):
+        self.config = config
+        self.advantage_computer = SwiftAdvantageComputer(config.algorithm)
+        self.trajectory_filter = SwiftTrajectoryFilter(config.algorithm)
+        self.model = None
+        self.tokenizer = None
+        self.optimizer = None
+        self.accelerator: Accelerator | None = None
+        self.policy_version = 0
+        self._resume_optimizer_state = None
+
+    def initialize(self, resume_from_checkpoint: bool = True) -> int:
+        ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
+        grad_accum = self.config.training.get("gradient_accumulation_steps", 1)
+        self.accelerator = Accelerator(
+            gradient_accumulation_steps=grad_accum,
+            kwargs_handlers=[ddp_kwargs],
+        )
+
+        model_name = self.config.model.name
+        trust_remote_code = self.config.model.get("trust_remote_code", False)
+        if self.accelerator.is_main_process:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        self.accelerator.wait_for_everyone()
+        if self.tokenizer is None:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+        if self.tokenizer.pad_token is None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            trust_remote_code=trust_remote_code,
+            torch_dtype=dtype,
+            attn_implementation=self.config.model.get("attn_implementation", None),
+        )
+
+        self.model = self._apply_lora(self.model)
+
+        start_batch = 0
+        if resume_from_checkpoint:
+            start_batch = self._maybe_resume()
+
+        num_trainable = sum(parameter.numel() for parameter in self.model.parameters() if parameter.requires_grad)
+        if num_trainable == 0:
+            raise RuntimeError("The policy has no trainable parameters; check model.adapter_path and model.use_lora.")
+
+        if self.config.model.get("gradient_checkpointing", False):
+            self._enable_gradient_checkpointing()
+
+        lr = self.config.training.learning_rate
+        self.optimizer = torch.optim.AdamW(
+            (parameter for parameter in self.model.parameters() if parameter.requires_grad),
+            lr=lr,
+            betas=(self.config.training.beta1, self.config.training.beta2),
+            eps=self.config.training.eps,
+        )
+        if self._resume_optimizer_state is not None:
+            self.optimizer.load_state_dict(self._resume_optimizer_state)
+            self._resume_optimizer_state = None
+
+        self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
+        self.policy_version = start_batch
+        if self.accelerator.is_main_process:
+            logger.info(
+                "Initialized Swift policy trainer: num_processes=%s, device=%s, trainable_params=%s",
+                self.accelerator.num_processes,
+                self.accelerator.device,
+                num_trainable,
+            )
+        return start_batch
+
+    def _enable_gradient_checkpointing(self) -> None:
+        # Reentrant checkpointing needs the block inputs to require grad. With
+        # LoRA every base weight is frozen, so the graph would be cut and the
+        # loss would arrive at backward() without a grad_fn.
+        self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        base_model = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
+        base_model.enable_input_require_grads()
+        base_model.config.use_cache = False
+
+    def _apply_lora(self, model):
+        adapter_path = self.config.model.get("adapter_path", None)
+        if adapter_path:
+            from peft import PeftModel
+
+            if not os.path.isdir(adapter_path):
+                raise FileNotFoundError(f"Initial LoRA adapter does not exist: {adapter_path}")
+            model = PeftModel.from_pretrained(model, adapter_path, is_trainable=True)
+            if self.accelerator is None or self.accelerator.is_main_process:
+                logger.info("Loaded trainable initial LoRA adapter from %s", adapter_path)
+        elif self.config.model.get("use_lora", False):
+            from peft import LoraConfig, get_peft_model
+
+            lora_config = LoraConfig(
+                r=self.config.model.get("lora_rank", 32),
+                lora_alpha=self.config.model.get("lora_alpha", 64),
+                target_modules=self.config.model.get("lora_target_modules", ["q_proj", "k_proj", "v_proj", "o_proj"]),
+                lora_dropout=self.config.model.get("lora_dropout", 0.05),
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            model = get_peft_model(model, lora_config)
+        return model
+
+    @property
+    def device(self) -> torch.device:
+        return self.accelerator.device
+
+    @property
+    def is_main_process(self) -> bool:
+        return self.accelerator.is_main_process
+
+    @property
+    def num_processes(self) -> int:
+        return self.accelerator.num_processes
+
+    def _checkpoint_dir(self) -> str:
+        return self.config.trainer.default_local_dir
+
+    def _maybe_resume(self) -> int:
+        checkpoint_dir = self._checkpoint_dir()
+        marker_path = os.path.join(checkpoint_dir, "latest_batch.txt")
+        if not os.path.exists(marker_path):
+            return 0
+        with open(marker_path) as f:
+            batch = int(f.read().strip())
+        model_path = os.path.join(checkpoint_dir, f"checkpoint-{batch}")
+        if not os.path.isdir(model_path):
+            return 0
+        if self.accelerator.is_main_process:
+            logger.info("Resuming from checkpoint %s", model_path)
+        if self.config.model.get("use_lora", False):
+            from peft import PeftModel
+
+            base = self.model.get_base_model() if hasattr(self.model, "get_base_model") else self.model
+            self.model = PeftModel.from_pretrained(base, model_path, is_trainable=True)
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(model_path, torch_dtype=self.model.dtype)
+        optim_path = os.path.join(model_path, "optimizer.pt")
+        if os.path.exists(optim_path):
+            self._resume_optimizer_state = torch.load(optim_path, map_location="cpu")
+        return batch + 1
+
+    def save_checkpoint(self, batch_idx: int) -> None:
+        if not self.accelerator.is_main_process:
+            return
+        checkpoint_dir = self._checkpoint_dir()
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        save_path = os.path.join(checkpoint_dir, f"checkpoint-{batch_idx}")
+        unwrapped = self.accelerator.unwrap_model(self.model)
+        unwrapped.save_pretrained(save_path)
+        self.tokenizer.save_pretrained(save_path)
+        torch.save(self.optimizer.state_dict(), os.path.join(save_path, "optimizer.pt"))
+        with open(os.path.join(checkpoint_dir, "latest_batch.txt"), "w") as f:
+            f.write(str(batch_idx))
+
+    def _collate_samples(self, samples: list[SwiftTrainingSample]) -> dict[str, torch.Tensor]:
+        max_len = max(sample.input_ids.numel() for sample in samples)
+        pad_id = self.tokenizer.pad_token_id
+
+        input_ids, target_ids, old_logprobs, advantages, mask = [], [], [], [], []
+        for sample in samples:
+            pad_len = max_len - sample.input_ids.numel()
+            input_ids.append(F.pad(sample.input_ids, (0, pad_len), value=pad_id))
+            target_ids.append(F.pad(sample.target_ids, (0, pad_len), value=pad_id))
+            old_logprobs.append(F.pad(sample.old_logprobs, (0, pad_len), value=0.0))
+            advantages.append(F.pad(sample.advantages, (0, pad_len), value=0.0))
+            mask.append(F.pad(sample.mask, (0, pad_len), value=0.0))
+
+        return {
+            "input_ids": torch.stack(input_ids).to(self.device),
+            "target_ids": torch.stack(target_ids).to(self.device),
+            "old_logprobs": torch.stack(old_logprobs).to(self.device),
+            "advantages": torch.stack(advantages).to(self.device),
+            "mask": torch.stack(mask).to(self.device),
+        }
+
+    def _importance_sampling_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, dict]:
+        outputs = self.model(input_ids=batch["input_ids"], attention_mask=(batch["input_ids"] != self.tokenizer.pad_token_id).long())
+        logits = outputs.logits
+        log_probs = F.log_softmax(logits, dim=-1)
+        token_log_probs = log_probs.gather(-1, batch["target_ids"].unsqueeze(-1)).squeeze(-1)
+
+        ratio = torch.exp(token_log_probs - batch["old_logprobs"])
+        clip_eps = self.config.training.get("clip_ratio", 0.2)
+        clipped_ratio = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps)
+        policy_loss = -torch.min(ratio * batch["advantages"], clipped_ratio * batch["advantages"])
+        masked_loss = policy_loss * batch["mask"]
+        denom = batch["mask"].sum().clamp_min(1.0)
+        loss = masked_loss.sum() / denom
+
+        metrics = {
+            "loss/policy": loss.detach().item(),
+            "policy/ratio_mean": ((ratio * batch["mask"]).sum() / denom).detach().item(),
+        }
+        return loss, metrics
+
+    @staticmethod
+    def _split_into_exact_minibatches(samples: list, num_minibatches: int) -> list[list]:
+        """Split samples into exactly N non-empty chunks.
+
+        DDP requires every rank to execute the same number of forward/backward
+        collectives. Local rollout lengths can produce different sample counts,
+        so a ceil/floor chunk size is not sufficient.
+        """
+        if num_minibatches < 1 or num_minibatches > len(samples):
+            raise ValueError("num_minibatches must be between 1 and len(samples)")
+        base_size, remainder = divmod(len(samples), num_minibatches)
+        chunks = []
+        start = 0
+        for index in range(num_minibatches):
+            chunk_size = base_size + (1 if index < remainder else 0)
+            chunks.append(samples[start : start + chunk_size])
+            start += chunk_size
+        return chunks
+
+    def _distributed_min_sample_count(self, local_count: int) -> int:
+        if self.num_processes == 1:
+            return local_count
+        count = torch.tensor(local_count, device=self.device, dtype=torch.int64)
+        torch.distributed.all_reduce(count, op=torch.distributed.ReduceOp.MIN)
+        return int(count.item())
+
+    def step(self, episodes: list, learning_rate: float | None = None) -> dict:
+        if learning_rate is not None:
+            for group in self.optimizer.param_groups:
+                group["lr"] = learning_rate
+
+        samples, grouping_metrics = process_episodes(
+            episodes,
+            self.advantage_computer,
+            self.trajectory_filter,
+            self.config.algorithm,
+        )
+        min_sample_count = self._distributed_min_sample_count(len(samples))
+        grouping_metrics["grouping/min_samples_across_ranks"] = min_sample_count
+        if min_sample_count == 0:
+            logger.warning("At least one DDP rank has no training samples; skipping this update on every rank.")
+            return grouping_metrics
+
+        self.model.train()
+        total_metrics = dict(grouping_metrics)
+        requested_minibatches = max(1, self.config.training.get("num_minibatches", 1))
+        num_minibatches = min(requested_minibatches, min_sample_count)
+        minibatches = self._split_into_exact_minibatches(samples, num_minibatches)
+        total_metrics["training/num_minibatches"] = num_minibatches
+        updated = False
+
+        for chunk in minibatches:
+            batch = self._collate_samples(chunk)
+            self.optimizer.zero_grad()
+            with self.accelerator.accumulate(self.model):
+                loss, step_metrics = self._importance_sampling_loss(batch)
+                self.accelerator.backward(loss)
+                if self.accelerator.sync_gradients:
+                    grad_norm = self.accelerator.clip_grad_norm_(
+                        self.model.parameters(),
+                        self.config.training.get("max_grad_norm", 1.0),
+                    )
+                    total_metrics["loss/grad_norm"] = float(grad_norm)
+                self.optimizer.step()
+                updated = True
+            total_metrics.update(step_metrics)
+
+        if updated:
+            self.policy_version += 1
+        return total_metrics
+
+    def get_model(self):
+        return self.accelerator.unwrap_model(self.model)
+
+    def get_tokenizer(self):
+        return self.tokenizer
+
+    def wait_for_everyone(self):
+        self.accelerator.wait_for_everyone()
+
+    def reduce_mean(self, value: float) -> float:
+        tensor = torch.tensor([value], device=self.device, dtype=torch.float32)
+        reduced = self.accelerator.reduce(tensor, reduction="mean")
+        return float(reduced.item())

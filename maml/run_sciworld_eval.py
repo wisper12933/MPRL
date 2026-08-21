@@ -12,12 +12,13 @@ from .model_loader import load_tokenizer, load_model
 from .data_loader import get_template_and_fix_tokenizer
 
 
-with open("/mnt/home/user28/MPRL/data/instructions/sciworld_inst.txt", 'r') as f:
-    BASE_PROMPT = f.read()    
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG_PATH = os.path.join(REPO_ROOT, "maml", "configs", "sciworld_eval_config.yaml")
+DEFAULT_PROMPT_PATH = os.path.join(REPO_ROOT, "data", "instructions", "sciworld_inst.txt")
+DEFAULT_TEST_IDX_PATH = os.path.join(REPO_ROOT, "data", "indices", "sciworld", "test_indices.json")
+DEFAULT_ENV_JAR_PATH = os.path.join(REPO_ROOT, "data", "indices", "sciworld", "scienceworld.jar")
 
-env_jar_path = "data/eval_idx/sciworld/scienceworld.jar"
 
-    
 def sciworld_step_patch():
     r"""Patch ScienceWorldEnv step function"""
     def step(self, inputStr:str):
@@ -141,16 +142,31 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        required=True,
+        default=DEFAULT_CONFIG_PATH,
         help="Path to the YAML configuration file containing DataArgs, ModelArgs, and TrainArgs."
     )
     parser.add_argument(
         "--test_idx_path",
         type=str,
-        required=True,
+        default=DEFAULT_TEST_IDX_PATH,
         help="Path to the indices JSON file for the selected test tasks."
     )
+    parser.add_argument(
+        "--prompt_path",
+        type=str,
+        default=DEFAULT_PROMPT_PATH,
+        help="Path to the base prompt file."
+    )
+    parser.add_argument(
+        "--env_jar_path",
+        type=str,
+        default=DEFAULT_ENV_JAR_PATH,
+        help="Path to the ScienceWorld jar file."
+    )
     args = parser.parse_args()
+    with open(args.prompt_path, 'r', encoding='utf-8') as f:
+        base_prompt = f.read()
+
     # read args
     data_args, model_args, generation_args, finetuning_args = read_specify_task_eval_args(args)
     # load model and tokenizer
@@ -165,7 +181,7 @@ def main():
     
     # load sciworld env
     sciworld_step_patch()
-    env = ScienceWorldEnv("", serverPath=os.path.join(os.getcwd(), env_jar_path), envStepLimit=200)
+    env = ScienceWorldEnv("", serverPath=args.env_jar_path, envStepLimit=200)
     
     # load test tasks
     if not os.path.exists(args.test_idx_path):
@@ -186,7 +202,7 @@ def main():
         ob, info = env.reset()
         
         messages = [
-            {"role": "user", "content": BASE_PROMPT},
+            {"role": "user", "content": base_prompt},
             {"role": "assistant", "content": "OK"},
             {"role": "user", "content": info['taskDesc']},
         ]

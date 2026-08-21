@@ -151,7 +151,8 @@ class AlfredTWEnv(object):
                 task_types.append(TASK_TYPES[tt_id])
 
         count = 0
-        for root, dirs, files in tqdm(list(os.walk(data_path, topdown=False))):
+        disable_tqdm = os.environ.get("ALFWORLD_DISABLE_TQDM", "1").lower() not in {"0", "false", "no"}
+        for root, dirs, files in tqdm(list(os.walk(data_path, topdown=False)), disable=disable_tqdm):
             if 'traj_data.json' in files:
                 count += 1
 
@@ -260,7 +261,7 @@ class AlfredTWEnv(object):
         elif training_method == "dagger":
             max_nb_steps_per_episode = self.config["dagger"]["training"]["max_nb_steps_per_episode"]
 
-            expert_plan = True if self.train_eval == "train" else False
+            expert_plan = self.config["env"].get("expert_plan", self.train_eval == "train")
             if expert_plan:
                 wrappers.append(AlfredExpert(expert_type))
                 request_infos.extras.append("expert_plan")

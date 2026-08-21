@@ -1,6 +1,6 @@
 ### model LLaMA-3.1-8B-Instruct Qwen3-4B-Instruct
-model_name_or_path: /mnt/home/user28/llms/Qwen3-4B-Instruct
-adapter_name_or_path: /mnt/home/user28/llms/Qwen3-4B-Instruct-checkpoints/MAML_plan+sft_sci
+model_name_or_path: /mnt/hdfs/lixingzuo/qwen_model/origin/Qwen3-4B-Instruct
+adapter_name_or_path: /mnt/hdfs/lixingzuo/qwen_model/sft/Qwen3-4B-Instruct/MPRL-lora/Qwen3-4B-Instruct-MAML-plan-sft-sci
 trust_remote_code: true
 
 ### data

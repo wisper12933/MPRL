@@ -91,6 +91,22 @@ tinker = [
     "tinker-cookbook @ git+https://github.com/thinking-machines-lab/tinker-cookbook.git#egg=tinker-cookbook ; python_version >= '3.11'",
 ]
 
+trl = [
+    "trl>=0.17.0",
+    "peft>=0.14.0",
+    "accelerate>=1.2.0",
+]
+
+swift = [
+    "accelerate>=1.2.0",
+    "peft>=0.14.0",
+    "openai>=1.0.0",
+    # 3.12.x supports the repository's vLLM 0.11 stack and exposes the
+    # official swift-rollout NCCL weight-synchronization client.
+    "ms-swift==3.12.3",
+    # Optional for colocate mode: pip install vllm
+]
+
 opentelemetry = [
     "opentelemetry-sdk",
 ]

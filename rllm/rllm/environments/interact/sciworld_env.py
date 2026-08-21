@@ -1,13 +1,34 @@
-import threading
+import logging
 import multiprocessing as mp
+import threading
 
 from scienceworld import ScienceWorldEnv
 
 from rllm.environments.base.base_env import BaseEnv
 
 
+class _ScienceWorldPortLogFilter(logging.Filter):
+    """Repair a malformed logger.info call in scienceworld 1.1.x."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if (
+            record.name == "scienceworld.scienceworld"
+            and record.msg == "ScienceWorld server running on port"
+            and len(record.args) == 1
+        ):
+            record.msg = "ScienceWorld server running on port %s"
+        return True
+
+
+def _patch_scienceworld_logging() -> None:
+    logger = logging.getLogger("scienceworld.scienceworld")
+    if not any(isinstance(log_filter, _ScienceWorldPortLogFilter) for log_filter in logger.filters):
+        logger.addFilter(_ScienceWorldPortLogFilter())
+
+
 # Process worker function to manage the SciWorld environment
 def _env_worker(conn, server_path, max_turns):
+    _patch_scienceworld_logging()
     # Create the environment factory
     env = ScienceWorldEnv("", serverPath=server_path, envStepLimit=max_turns)
 
@@ -157,8 +178,11 @@ class SciWorldEnv(BaseEnv):
                 return observation, 0.0, self.done, {}
             
             self.parent_conn.send(("step", action))
-            observation, _, self.done, info = self.parent_conn.recv()
-            observation, reward = f"Observation: {observation}", info["raw_score"]
+            observation, reward, self.done, info = self.parent_conn.recv()
+            # The patched ScienceWorld API returns the score delta. rLLM sums
+            # step rewards into the trajectory reward, so returning raw_score
+            # here would repeatedly count the cumulative score.
+            observation = f"Observation: {observation}"
             
             if "No known action matches that input" in observation:
                 self.error_steps += 1
@@ -176,7 +200,7 @@ class SciWorldEnv(BaseEnv):
         try:
             self.parent_conn.send(("close", None))
             self.worker_process.join(timeout=1)
-        except:
+        except Exception:
             pass
     
     @staticmethod

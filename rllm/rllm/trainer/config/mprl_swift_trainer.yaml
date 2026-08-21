@@ -1,0 +1,96 @@
+# MPRL task-interaction training with an external `swift rollout` server.
+
+mprl:
+  task: webshop
+  train_limit: null
+  test_limit: null
+  alfworld_data: null
+  alfworld_config: null
+  sciworld_jar: null
+  max_steps: null
+  n_parallel_agents: null
+
+model:
+  name: /mnt/hdfs/lixingzuo/qwen_model/origin/Qwen3-4B-Instruct
+  adapter_path: null
+  trust_remote_code: true
+  use_lora: true
+  lora_rank: 8
+  lora_alpha: 16
+  lora_dropout: 0.0
+  lora_target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+  gradient_checkpointing: true
+  attn_implementation: null
+
+rollout:
+  mode: server
+  base_url: http://127.0.0.1:8000
+  api_key: EMPTY
+  batch_size: 8
+  batch_timeout_s: 0.05
+  server_timeout_s: 900
+  group_port: 51216
+  sync_weights: true
+  weight_sync_mode: auto
+
+planning:
+  enabled: true
+  max_tokens: 1024
+  temperature: 0.1
+  top_p: 0.9
+
+training:
+  group_size: 8
+  learning_rate: 1.0e-6
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-8
+  num_minibatches: 8
+  clip_ratio: 0.2
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 0.95
+  norm_adv_by_std_in_grpo: false
+  grouping_level: episode
+  remove_constant_reward_groups: false
+
+agent:
+  max_steps: 12
+  n_parallel_agents: 2
+  agent_args: {}
+
+env:
+  env_args: {}
+
+data:
+  train_files: null
+  val_files: null
+  max_prompt_length: 6144
+  max_response_length: 4096
+  train_batch_size: 1
+  val_batch_size: 1
+
+trainer:
+  total_epochs: 1
+  logger: [console, wandb]
+  project_name: rllm-mprl
+  experiment_name: mprl-webshop
+  test_freq: 25
+  save_freq: 2000
+  val_before_train: true
+  default_local_dir: /tmp/rllm-mprl-webshop
+
+disable_thinking: false
+filter_token_mismatch: true
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

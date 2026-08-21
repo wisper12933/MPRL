@@ -135,6 +135,15 @@ dmypy.json
 cython_debug/
 
 *.zip
+.claude/*
+.venv-mprl311/*
 envs/alfworld/alfworld_data
 envs/webshop/data
 envs/webshop/search_engine/indexes
+data/alfworld_data
+uv/*
+
+# Runtime artifacts
+rllm/logs/
+rllm/outputs/
+rllm/wandb/

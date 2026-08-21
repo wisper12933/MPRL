@@ -95,7 +95,7 @@ class AgentExecutionEngine:
         self.rollout_engine_args = rollout_engine_args
         self.sampling_params = kwargs.get("sampling_params", {})  # for openai api requests
 
-        assert self.engine_name in ["openai", "verl", "tinker"], "Currently only openai, verl and tinker are supported as rollout engine"
+        assert self.engine_name in ["openai", "verl", "tinker", "trl", "swift"], "Currently only openai, verl, tinker, trl and swift are supported as rollout engine"
         if self.engine_name == "openai":
             from rllm.engine.rollout.openai_engine import OpenAIEngine
 
@@ -120,6 +120,18 @@ class AgentExecutionEngine:
             from rllm.engine.rollout.tinker_engine import TinkerEngine
 
             self.rollout_engine = TinkerEngine(
+                **rollout_engine_args,
+            )
+        elif self.engine_name == "trl":
+            from rllm.engine.rollout.trl_engine import TrlEngine
+
+            self.rollout_engine = TrlEngine(
+                **rollout_engine_args,
+            )
+        elif self.engine_name == "swift":
+            from rllm.engine.rollout.swift_engine import SwiftEngine
+
+            self.rollout_engine = SwiftEngine(
                 **rollout_engine_args,
             )
 
@@ -159,8 +171,31 @@ class AgentExecutionEngine:
         elif self.engine_name == "tinker":
             output = await self.rollout_engine.get_model_response(prompt, application_id=application_id, enforce_max_prompt_length=False, **sampling_params)
             return output
+        elif self.engine_name == "trl":
+            output = await self.rollout_engine.get_model_response(prompt, application_id=application_id, enforce_max_prompt_length=False, **sampling_params)
+            return output
+        elif self.engine_name == "swift":
+            output = await self.rollout_engine.get_model_response(prompt, application_id=application_id, enforce_max_prompt_length=False, **sampling_params)
+            return output
         else:
             raise NotImplementedError(f"Engine type '{self.engine_name}' not supported")
+
+    async def _run_initial_planning(self, agent, observation, info, application_id, **kwargs) -> float:
+        """Run an optional context-only plan without creating a trainable step."""
+        if not getattr(agent, "planning_enabled", True):
+            return 0.0
+        build_messages = getattr(agent, "build_planning_messages", None)
+        inject_plan = getattr(agent, "inject_plan", None)
+        if not callable(build_messages) or not callable(inject_plan):
+            return 0.0
+
+        planning_messages = build_messages(observation, info)
+        planning_kwargs = dict(kwargs)
+        planning_kwargs.update(getattr(agent, "planning_sampling_params", {}))
+        start_time = time.time()
+        model_output = await self.get_model_response(planning_messages, application_id, **planning_kwargs)
+        inject_plan(model_output.text)
+        return time.time() - start_time
 
     def update_envs_and_agents(self, envs, agents):
         """
@@ -212,6 +247,9 @@ class AgentExecutionEngine:
             done=False,
             info=info,
         )
+        planning_time = await self._run_initial_planning(agent, observation, info, application_id, **kwargs)
+        llm_time += planning_time
+        total_time += planning_time
         messages = agent.chat_completions
         prompt_tokens, _ = convert_messages_to_tokens_and_masks(messages, tokenizer=self.tokenizer, parser=self.chat_parser, contains_first_msg=True, contains_generation_msg=True)
         prompt_token_len = len(prompt_tokens)
@@ -408,6 +446,7 @@ class AgentExecutionEngine:
                     "env_time": env_time,
                     # Time to calculate response tokens
                     "llm_time": llm_time,
+                    "planning_time": planning_time,
                     # Total time spent in the trajectory
                     "total_time": total_time,
                     "token_mismatch": 0.0 if is_valid_trajectory else 1.0,
@@ -422,6 +461,7 @@ class AgentExecutionEngine:
                 "trajectory_reward": trajectory.reward,
                 "idx": env.idx,
                 "mc_returns": [step.mc_return for step in trajectory.steps][: len(episode_steps)],
+                "metaplan": getattr(agent, "generated_plan", None),
             }
             return steps_result
         else:
@@ -485,7 +525,13 @@ class AgentExecutionEngine:
         response_tokens = torch.tensor(response_tokens, dtype=torch.long)
         response_masks = torch.tensor(response_masks, dtype=torch.long)
 
-        if self.config.rllm.filter_token_mismatch:
+        filter_token_mismatch = False
+        if self.config is not None:
+            if hasattr(self.config, "rllm"):
+                filter_token_mismatch = self.config.rllm.get("filter_token_mismatch", False)
+            elif hasattr(self.config, "filter_token_mismatch"):
+                filter_token_mismatch = self.config.filter_token_mismatch
+        if filter_token_mismatch:
             response_masks = response_masks * int(is_valid_trajectory)
 
         return prompt_tokens, response_tokens, response_masks, is_valid_trajectory
@@ -510,7 +556,7 @@ class AgentExecutionEngine:
 
         self.executor = ThreadPoolExecutor(max_workers=max_concurrency)
 
-        if self.engine_name == "verl":
+        if self.engine_name in ("verl", "trl", "swift"):
             await self.rollout_engine.wake_up()  # type: ignore
 
         semaphore = asyncio.Semaphore(self.n_parallel_agents)
@@ -545,7 +591,7 @@ class AgentExecutionEngine:
             except Exception as e:
                 raise e
 
-        if self.engine_name == "verl":
+        if self.engine_name in ("verl", "trl", "swift"):
             await self.rollout_engine.sleep()  # type: ignore
 
         self.executor.shutdown(wait=False, cancel_futures=True)
