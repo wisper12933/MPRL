@@ -93,11 +93,21 @@ class Tracking:
         self.logger = {}
 
         if "tracking" in default_backend or "wandb" in default_backend:
+            import os
+
             import wandb
 
             settings = None
             if config and config["trainer"].get("wandb_proxy", None):
                 settings = wandb.Settings(https_proxy=config["trainer"]["wandb_proxy"])
+
+            # wandb re-enables its service on import, and WANDB_REQUIRE_SERVICE is
+            # kept verbatim as a string, so even "false" would switch it back on.
+            # Drop it here so WANDB_DISABLE_SERVICE stays effective for runs that
+            # imported wandb before that flag was set.
+            if os.environ.get("WANDB_DISABLE_SERVICE"):
+                os.environ.pop("WANDB_REQUIRE_SERVICE", None)
+
             wandb.init(project=project_name, name=experiment_name, config=config, settings=settings)
             self.logger["wandb"] = wandb
 

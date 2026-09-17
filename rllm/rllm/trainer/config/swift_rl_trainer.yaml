@@ -1,0 +1,89 @@
+# Swift Backend Configuration for rLLM
+# Inspired by ms-swift GRPO: vLLM server/colocate or batched transformers for
+# sampling; Accelerate DDP for training. No Ray.
+
+model:
+  name: "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+  trust_remote_code: false
+  use_lora: false
+  lora_rank: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  gradient_checkpointing: true
+  attn_implementation: null
+
+# Rollout (sampling) — main difference vs trl backend
+rollout:
+  # server | colocate | transformers
+  # server: official ms-swift `swift rollout` service with weight sync
+  # colocate: in-process vLLM with request batching
+  # transformers: batched HF generate (no serial lock; uses output_scores)
+  mode: server
+  base_url: "http://127.0.0.1:8000"
+  api_key: "EMPTY"
+  batch_size: 16
+  batch_timeout_s: 0.05
+  gpu_memory_utilization: 0.85
+  tensor_parallel_size: 1
+  server_timeout_s: 900
+  group_port: 51216
+  sync_weights: true
+  # auto: full model unless model.use_lora=true, then adapter-only
+  weight_sync_mode: auto
+
+training:
+  group_size: 8
+  learning_rate: 1.0e-6
+  beta1: 0.9
+  beta2: 0.95
+  eps: 1.0e-8
+  num_minibatches: 1
+  clip_ratio: 0.2
+  max_grad_norm: 1.0
+  gradient_accumulation_steps: 1
+
+sampling:
+  temperature: 0.6
+  top_p: 0.95
+
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 0.95
+  norm_adv_by_std_in_grpo: false
+  grouping_level: episode
+  remove_constant_reward_groups: false
+
+agent:
+  max_steps: 1
+  n_parallel_agents: null
+  agent_args: {}
+
+env:
+  env_args: {}
+
+data:
+  train_files: null
+  val_files: null
+  max_prompt_length: 2048
+  max_response_length: 16384
+  train_batch_size: 4  # per-GPU prompt count
+  val_batch_size: 8
+
+trainer:
+  total_epochs: 100
+  logger: ['console']
+  project_name: 'rllm-swift'
+  experiment_name: 'deepscaler'
+  test_freq: 20
+  save_freq: 20
+  val_before_train: true
+  default_local_dir: '/tmp/rllm-swift-checkpoints'
+
+disable_thinking: false
+filter_token_mismatch: true
+
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}

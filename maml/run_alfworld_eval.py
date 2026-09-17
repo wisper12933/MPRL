@@ -1,3 +1,4 @@
+import os
 import re
 import sys
 import yaml
@@ -11,8 +12,10 @@ from .model_loader import load_tokenizer, load_model
 from .data_loader import get_template_and_fix_tokenizer
 
 
-with open("/mnt/home/user28/MPRL/data/instructions/alfworld_inst.txt", 'r') as f:
-    BASE_PROMPT = f.read()    
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DEFAULT_CONFIG_PATH = os.path.join(REPO_ROOT, "envs", "alfworld", "base_config.yaml")
+DEFAULT_PROMPT_PATH = os.path.join(REPO_ROOT, "data", "instructions", "alfworld_inst.txt")
+
 
 PREFIXES = {
     'pick_and_place': 'put',
@@ -102,10 +105,25 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        required=True,
-        help="Path to the YAML configuration file containing DataArgs, ModelArgs, and TrainArgs. For example: configs/config.yaml"
+        default=os.path.join(REPO_ROOT, "maml", "configs", "alfworld_eval_config.yaml"),
+        help="Path to the YAML configuration file containing DataArgs, ModelArgs, and TrainArgs."
+    )
+    parser.add_argument(
+        "--prompt_path",
+        type=str,
+        default=DEFAULT_PROMPT_PATH,
+        help="Path to the base prompt file."
+    )
+    parser.add_argument(
+        "--env_config_path",
+        type=str,
+        default=DEFAULT_CONFIG_PATH,
+        help="Path to the ALFWorld environment config file."
     )
     args = parser.parse_args()
+    with open(args.prompt_path, 'r', encoding='utf-8') as f:
+        base_prompt = f.read()
+
     # read args
     data_args, model_args, generation_args, finetuning_args = read_specify_task_eval_args(args)
     # load model and tokenizer
@@ -119,7 +137,7 @@ def main():
     gen_kwargs["pad_token_id"] = tokenizer.pad_token_id
     
     # load alfworld env
-    with open("envs/alfworld/base_config.yaml") as reader:
+    with open(args.env_config_path, encoding='utf-8') as reader:
         config = yaml.safe_load(reader)
     
     env = getattr(alfworld.agents.environment, config["env"]["type"])(config, train_eval="eval_out_of_distribution")
@@ -142,7 +160,7 @@ def main():
             if name.startswith(k):
                 print(k, v)
                 messages = [
-                    {"role": "user", "content": BASE_PROMPT},
+                    {"role": "user", "content": base_prompt},
                     {"role": "assistant", "content": "OK"},
                     {"role": "user", "content": ob}
                 ]

@@ -1,41 +1,27 @@
-import yaml
 import threading
-import multiprocessing as mp
+import uuid
 
-from envs.webshop.web_agent_site.envs import WebAgentTextEnv
+from envs.webshop.web_agent_site.envs.web_agent_text_env import SimServer, WebAgentTextEnv
+from envs.webshop.web_agent_site.utils import DEFAULT_FILE_PATH
 
 from rllm.environments.base.base_env import BaseEnv
 
-try:
-    mp.set_start_method('spawn', force=True)
-except RuntimeError:
-    pass
+_SERVER = None
+_SERVER_LOCK = threading.Lock()
+_SERVER_REQUEST_LOCK = threading.Lock()
 
-# Process worker function to manage the WebShop environment
-def _env_worker(conn): 
-    # Create the environment factory
-    env = WebAgentTextEnv(observation_mode="text", human_goals=True)
 
-    while True:
-        cmd, data = conn.recv()
-        if cmd == "reset":
-            task = data
-            env.reset(task["id"])
-            ob, info = env.observation, {"task_desciption": env.observation}
-            conn.send((ob, info))
-        elif cmd == "step":
-            action = data
-            try:
-                observation, reward, done, info = env.step(action=action)
-                observation = f"Observation: {observation}"
-            except AssertionError:
-                observation, reward, done, info = "Observation: Invalid action!", 0.0, False, {}
-            if info is None:
-                info = {}
-            conn.send((observation, reward, done, info))
-        elif cmd == "close":
-            conn.close()
-            break
+def _get_shared_server():
+    """Load the 1.18M-product corpus once per training rank."""
+    global _SERVER
+    with _SERVER_LOCK:
+        if _SERVER is None:
+            _SERVER = SimServer(
+                "http://127.0.0.1:3000",
+                DEFAULT_FILE_PATH,
+                human_goals=True,
+            )
+    return _SERVER
 
 
 class WebShopEnv(BaseEnv):
@@ -57,14 +43,16 @@ class WebShopEnv(BaseEnv):
         """
         super().__init__()
         
-        # Create pipe for communication (multi-thread safe)
-        self.parent_conn, self.child_conn = mp.Pipe()
-        self.worker_process = mp.Process(
-            target=_env_worker, 
-            args=(self.child_conn,),
-            daemon=True
-        )
-        self.worker_process.start()
+        # Product/search data is immutable and expensive to load. Each
+        # WebAgentTextEnv keeps independent browser/session state while sharing
+        # the read-mostly simulator within this rank.
+        with _SERVER_REQUEST_LOCK:
+            self.env = WebAgentTextEnv(
+                observation_mode="text",
+                human_goals=True,
+                server=_get_shared_server(),
+                session_prefix=f"{uuid.uuid4().hex}-",
+            )
         
         self.task = task
         self.max_turns = max_turns
@@ -83,12 +71,12 @@ class WebShopEnv(BaseEnv):
         Reset the Webshop environment with a new task.
         task: {"id": int}
         """
-        with self.lock:
+        with self.lock, _SERVER_REQUEST_LOCK:
             if task is not None:
                 self.task = task
             
-            self.parent_conn.send(("reset", self.task))
-            ob, info = self.parent_conn.recv()
+            ob, _ = self.env.reset(self.task["id"])
+            info = {"task_description": ob}
             
             self.done = False
             self.current_turn = 0
@@ -109,7 +97,7 @@ class WebShopEnv(BaseEnv):
         """
         # Extract action from the model output
         assert isinstance(action, str), "Action.action from InteractAgent (used in AgentExecutionEngine) should be a string."
-        with self.lock:
+        with self.lock, _SERVER_REQUEST_LOCK:
             self.current_turn += 1
             # Step the environment
             if action == "":
@@ -119,9 +107,13 @@ class WebShopEnv(BaseEnv):
                     self.done = True
                 return observation, 0.0, self.done, {}
             
-            # Send step command
-            self.parent_conn.send(("step", action))
-            observation, reward, self.done, info = self.parent_conn.recv()
+            try:
+                observation, reward, self.done, info = self.env.step(action=action)
+                observation = f"Observation: {observation}"
+            except AssertionError:
+                observation, reward, self.done, info = "Observation: Invalid action!", 0.0, False, {}
+            if info is None:
+                info = {}
             
             if "Invalid action!" in observation:
                 self.error_steps += 1
@@ -137,11 +129,8 @@ class WebShopEnv(BaseEnv):
             return observation, reward, self.done, info
     
     def close(self):
-        try:
-            self.parent_conn.send(("close", None))
-            self.worker_process.join(timeout=1)
-        except:
-            pass
+        # The shared server remains alive for reuse by the next rollout batch.
+        return None
     
     @staticmethod
     def from_dict(env_args: dict) -> "WebShopEnv":

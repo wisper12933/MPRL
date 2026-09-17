@@ -1,0 +1,19 @@
+Please generate a step-by-step workflow for a web shopping task:
+<task>
+{{TASK}}
+</task>
+
+The search results page lists products with prices and clickable links.
+After opening a product page, select required attributes such as color or size and confirm the purchase.
+If a product does not satisfy the request, click [< Prev] to return to the results and consider another item.
+
+The available actions are:
+1. search[keywords]: search using carefully chosen keywords.
+2. click[value]: click a product, option, navigation control, or Buy Now.
+
+The generated workflow must use this format:
+<workflow>
+Step 1: ...
+Step 2: ...
+...
+</workflow>

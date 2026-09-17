@@ -1,0 +1,38 @@
+Please generate a step-by-step workflow for a scientific task:
+<task>
+You are a helpful assistant performing a scientific experiment in an environment.
+The available rooms are kitchen, foundry, workshop, bathroom, outside, living room, bedroom, greenhouse, art studio, and hallway.
+
+{{TASK}}
+</task>
+
+Explore the environment and find the items needed to complete the experiment.
+You can teleport to any room in one step. All containers are already open.
+
+The available actions are:
+open OBJ
+close OBJ
+activate OBJ
+deactivate OBJ
+connect OBJ to OBJ
+disconnect OBJ from OBJ
+use OBJ [on OBJ]
+look around
+examine OBJ
+look at OBJ
+read OBJ
+move OBJ to OBJ
+pick up OBJ
+pour OBJ into OBJ
+mix OBJ
+teleport to LOC
+focus on OBJ
+wait
+wait1
+
+The generated workflow must use this format:
+<workflow>
+Step 1: ...
+Step 2: ...
+...
+</workflow>

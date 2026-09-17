@@ -3,9 +3,13 @@ from datasets import load_dataset
 from rllm.data.dataset import DatasetRegistry
 
 
+TRAIN_DATASET_ID = "agentica-org/DeepScaleR-Preview-Dataset"
+TEST_DATASET_ID = "HuggingFaceH4/aime_2024"
+
+
 def prepare_math_data():
-    train_dataset = load_dataset("../../datasets/DeepScaleR-Preview-Dataset", split="train")
-    test_dataset = load_dataset("../../datasets/aime_2024", split="train")
+    train_dataset = load_dataset(TRAIN_DATASET_ID, split="train")
+    test_dataset = load_dataset(TEST_DATASET_ID, split="train")
 
     def preprocess_fn(example, idx):
         return {
