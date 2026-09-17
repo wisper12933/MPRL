@@ -422,6 +422,11 @@ class AgentExecutionEngine:
                 colorful_print(f"Trajectory {idx} is masked out due to overlong filter.", "red")
 
         trajectory: Trajectory = agent.trajectory
+        # Optional agent-side reward shaping, applied to step rewards before they are
+        # aggregated so that the trajectory reward and MC returns stay consistent.
+        shape_trajectory_reward = getattr(agent, "shape_trajectory_reward", None)
+        if callable(shape_trajectory_reward) and not masked_out:
+            shape_trajectory_reward(trajectory, max_steps=self.max_steps)
         # Aggregate final trajectory statistics
         compute_trajectory_reward(trajectory)
         compute_mc_return(trajectory, gamma=self.gamma)

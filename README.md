@@ -78,7 +78,7 @@ MPRL/
 
 ## 3. 环境准备
 
-### 3.1 Python 环境
+### 3.1 Python 环境（只需公网包）
 
 项目环境固定为 Python 3.11，当前约定的虚拟环境目录为：
 
@@ -86,28 +86,61 @@ MPRL/
 .venv-mprl311
 ```
 
+**整套环境只需要公网 PyPI，不依赖任何内网 index。** `pyproject.toml` 里的每一条 pin 都取自已跑通三个任务 RL 与 infer 的 `.venv-mprl311`，并且逐个核对过公网 PyPI 上存在同版本。字节内部包（`byted-wandb`、`bytedray` 等 33 个）全部是可选的，单独放在 `requirements-internal.txt`，三个任务的训练和推理都不依赖它们。
+
 从仓库根目录创建环境：
 
 ```bash
 uv venv --python 3.11 .venv-mprl311
-uv pip install --python .venv-mprl311/bin/python -r requirements.txt
-uv pip install --python .venv-mprl311/bin/python -e './rllm[swift]'
+uv pip install --python .venv-mprl311/bin/python '.[flash-attn,webshop-nlp,swift,wandb-public]'
+uv pip install --python .venv-mprl311/bin/python --no-deps -e ./rllm
 ```
 
-`swift` extra 会安装本项目权重同步代码所依赖的 `ms-swift==3.12.3`。只执行 `-e ./rllm` 不足以保证 `swift rollout` 命令存在。
+`torch`/`torchvision`/`torchaudio` 的 `+cu128` wheel 不在 PyPI 上，`pyproject.toml` 已经用 `[[tool.uv.index]]` 指向 `download.pytorch.org/whl/cu128`，不需要手动加 `--extra-index-url`。
+
+extras 一览：
+
+| extra | 是否必需 | 说明 |
+|---|---|---|
+| `swift` | 必需 | `ms-swift==3.12.3` 及其专属子树，`swift rollout` 命令来自这里。只执行 `-e ./rllm` 不足以保证该命令存在 |
+| `flash-attn` | RL 训练必需 | cu12 / torch 2.8 / cp311 的预编译 wheel，避免裸 pin 触发的源码编译 |
+| `webshop-nlp` | WebShop 必需 | spaCy `en_core_web_sm`，不在 PyPI 上，走 GitHub release wheel |
+| `wandb-public` | 与 byted-wandb 二选一 | 公网 `wandb==0.23.1`，详见 3.2 |
+| `flashinfer` | 可选 | vLLM 的 FlashInfer backend 加整套 CUDA 13 wheel，数 GB |
+| `dev` | 可选 | pytest、memray 等 |
+| `image-leftovers` | 不要装 | MLX 基础镜像残留，其中 `grpcio-reflection` 与锁定的 `grpcio`/`protobuf` 直接冲突 |
+
+#### 精确复现（跳过依赖解析）
+
+`requirements.txt` 是公网那半边环境的精确 freeze（411 条 pin 加 2 个 wheel URL），和参考环境逐一对应，包含 `flashinfer`、`dev` 以及基础镜像残留在内的全部公网包。用 `--no-deps` 安装可以完全跳过解析，最快也最确定：
+
+```bash
+uv venv --python 3.11 .venv-mprl311
+uv pip install --python .venv-mprl311/bin/python --no-deps -r requirements.txt
+uv pip install --python .venv-mprl311/bin/python wandb==0.23.1
+uv pip install --python .venv-mprl311/bin/python --no-deps -e ./rllm
+```
+
+想要精简体积就用上面的 extras 方式。
+
+> 不要"顺手升级"那些看起来偏旧的 pin，例如 `urllib3==1.26.20`、`protobuf==3.20.3`、`grpcio==1.59.5`、`packaging==24.2`、`pyjwt==1.7.1`。这些是内部 `bytedray`/`byteddps` 施加的上界，参考环境就是靠它们跑通的。`pyproject.toml` 里的 `[tool.uv] override-dependencies` 正是为了压住公网包反向抬高这些版本的要求；去掉它解析会直接失败。
 
 当前已验证的关键版本包括：
 
 - Python 3.11
-- PyTorch 2.8.0 + CUDA 12.8
+- PyTorch 2.8.0 + CUDA 12.8（`torch==2.8.0+cu128`）
 - Transformers 4.57.3
 - Accelerate 1.12.0
 - vLLM 0.11.0
+- verl 0.6.1
 - PEFT 0.18.1
-- ms-swift/Swift rollout
+- ms-swift 3.12.3（Swift rollout）
+- flash-attn 2.8.3.post1（cu12torch2.8 预编译 wheel）
 - NumPy 1.26.4
+- datasets 3.6.0
 - Pyserini 0.17.0
 - ScienceWorld 1.1.3
+- TextWorld 1.7.0（必须带 `pddl` extra，ALFWorld 依赖其中的 `fast-downward-textworld`）
 
 安装后至少执行：
 
@@ -125,16 +158,17 @@ print("gpu count:", torch.cuda.device_count())
 PY
 ```
 
-### 3.2 Byted-WandB
+### 3.2 WandB 与内部包（可选）
 
-公司环境使用 `byted-wandb` 替代公开版 WandB。训练脚本已经设置：
+`wandb` 是二选一：公网 `wandb` 和 `byted-wandb` 都提供顶层 `wandb` 模块，只能装一个。3.1 的默认命令用的是公网版（`wandb-public` extra），**在公网环境下不需要做任何额外配置**。
+
+只有需要上传到公司实验平台时，才改用 `byted-wandb`。这条路径需要内网 index：
 
 ```bash
-WANDB_DISABLE_SERVICE=true
-WANDB_START_METHOD=thread
+uv pip install --python .venv-mprl311/bin/python --no-deps -r requirements-internal.txt
 ```
 
-这样可以绕过 byted-wandb service subprocess 的临时端口文件问题，同时仍上传到公司实验平台。
+该文件含 33 个包：19 个公网没有的内部包（`byted-wandb`、`bytedray`、`bytedtos`、`bytedtcc` 等）加上只为它们服务的传递依赖。安装它时不要再装 `wandb-public` extra，也不要事后用公开 PyPI 的 `wandb` 覆盖它。
 
 确认环境：
 
@@ -142,7 +176,14 @@ WANDB_START_METHOD=thread
 uv pip show --python .venv-mprl311/bin/python byted-wandb
 ```
 
-如果使用 byted-wandb，不要在训练前再次用公开 PyPI 的 `wandb` 覆盖它。日志中的 HTTPS、DNS 或 SSL warning 通常表示公司网络链路暂时不可用；本地训练和本地日志通常仍可继续。
+使用 `byted-wandb` 时，训练脚本已经设置：
+
+```bash
+WANDB_DISABLE_SERVICE=true
+WANDB_START_METHOD=thread
+```
+
+这样可以绕过 byted-wandb service subprocess 的临时端口文件问题，同时仍上传到公司实验平台。日志中的 HTTPS、DNS 或 SSL warning 通常表示公司网络链路暂时不可用；本地训练和本地日志通常仍可继续。
 
 ### 3.3 Java 11
 
@@ -538,7 +579,8 @@ env.reset()
   -> 正常生成 Thought/Action
   -> env.step(action)
   -> 重复交互直到完成或达到 max_steps
-  -> 根据环境 reward 计算 GRPO advantage
+  -> 任务完成时，环境 reward 叠加 0.2 * R_con 和长度惩罚 R_len（见 8.3）
+  -> 根据叠加后的 reward 计算 GRPO advantage
   -> 只对正常交互 response token 做 policy-gradient 更新
 ```
 
@@ -548,6 +590,7 @@ env.reset()
 env.reset()
   -> 得到初始任务 observation
   -> 直接开始 Thought/Action 交互
+  -> 任务完成时只叠加 R_len；R_con 不生效（没有计划可对齐）
   -> 后续 RL 流程不变
 ```
 
@@ -562,7 +605,113 @@ env.reset()
 
 注意：后续动作生成会读取注入后的 workflow，所以规划会间接改变采样轨迹和最终 reward；“不参与梯度”并不表示它对策略行为没有影响。
 
-### 8.3 GRPO 与权重同步
+### 8.3 Reward 组成
+
+第三阶段的 trajectory reward 由三部分相加：
+
+```text
+R = R_env  +  0.2 * R_con  +  R_len
+```
+
+`R_env` 是环境原生 reward（rLLM 把各步 step reward 求和）。两个附加项实现在 `mprl/plan_reward.py`，由 `PlannedInteractAgent.shape_trajectory_reward()` 在轨迹结束后加到最后一步的 step reward 上，再由引擎重新汇总，因此 `trajectory.reward` 和 Monte Carlo return 都会包含它们。
+
+#### R_con：plan 与执行的一致性（仅 plan 模式）
+
+```text
+R_con(o) = (1 / L_plan) * Σ_k 1[sim(plan_k, act_f(k)) ≥ τ]  -  λ * |L_plan - L_act| / max(L_plan, L_act)
+```
+
+两个前提都必须满足才会计算：**任务已完成**，且**注入了 `<workflow>`**。关闭 Plan 时该项恒为 0，因为没有可对齐的计划；任务失败时也恒为 0，否则"生成一个容易照做的简单计划、照做但不完成任务"就能白拿最多 +0.2。默认权重 0.2，`τ=0.45`，`λ=0.5`。
+
+**相关度 `sim` 完全基于规则，不依赖任何额外模型编码或语料统计：**
+
+```text
+sim(p, a) = w_v * 1[verb(a) ∈ tokens(p)]  +  (1 - w_v) * Dice(args(p), args(a))
+```
+
+1. **归一化**：小写、按非字母数字切词、去停用词、去掉纯数字、粗略去复数。纯数字被丢弃是因为计划写成 index-free 的「put the mug on the desk」，而动作带物体编号「put mug 1 in desk 2」，编号只会带来噪声。
+2. **动词**：动作的首个 token（`go`/`take`/`open`/`search`/`click`/`activate`……）。三个环境的动作都是「命令 + 参数」形式，动词决定了动作类型。
+3. **参数**：其余内容词，用 Dice 系数算重合度。Dice 比 Jaccard 更能容忍「计划句子长、环境命令短」的长度差。
+4. **复合词前缀匹配**：共享前缀不短于 4 个字符即算命中，让 `sink` 对上 `sinkbasin`、`table` 对上 `diningtable`。
+5. **对齐 `f(k)`**：零 gap cost 的 Needleman-Wunsch 单调对齐，计划步和动作都可被跳过，但 `f(k)` 不回退。这让 R_con 衡量的是「按计划顺序执行」，而不是「无序地做过计划里的事」。
+
+动词和参数分开计分是有意的。若用单一词袋分数，`go to sinkbasin 1` 对上「Go to the desk」会因为共享动词 `go` 在两 token 的动作里占比过高而拿到 0.67，越过阈值；分开之后这种「动词对、目标错」的情形被封顶在 `w_v = 0.4`，低于默认 `τ = 0.45`。
+
+实测区分度：
+
+| 场景 | R_con |
+|---|---|
+| ALFWorld 按计划执行 | +0.92 |
+| ALFWorld 完全偏离计划 | +0.00 |
+| ScienceWorld 按计划执行 | +0.71 |
+| ScienceWorld 完全偏离 | −0.08 |
+| WebShop 按计划执行 | +0.75 |
+| WebShop 部分偏离 | +0.40 |
+| WebShop 完全偏离 | −0.10 |
+
+最坏情形（12 步计划 × 60 步动作）单条轨迹约 3 ms，相对 LLM 调用可忽略。
+
+#### R_len：完成长度惩罚（plan 与非 plan 模式都生效）
+
+```text
+R_len = -0.1 * 实际交互步数 / max_steps
+```
+
+- **只在任务完成时施加。** 否则失败越快惩罚越小，等于鼓励提前放弃。
+- 完成判定沿用仓库既有约定（`compute_pass_at_k()` 的 `reward > 0`），阈值由 `success_threshold` 控制。
+- 与是否启用 Plan 无关，这是它和 R_con 的关键区别：R_con 额外要求 plan 模式。
+
+#### 两项的生效条件
+
+`shape_reward()` 先判定 `success = R_env > success_threshold`，失败轨迹的 delta 恒为 0：
+
+| 任务完成 | 注入了 plan | R_con | R_len |
+| --- | --- | --- | --- |
+| 是 | 是 | 生效 | 生效 |
+| 是 | 否 | 0 | 生效 |
+| 否 | 任意 | 0 | 0 |
+
+#### 配置
+
+```yaml
+reward:
+  consistency_enabled: true
+  consistency_weight: 0.2
+  tau: 0.45
+  lambda_len: 0.5
+  verb_weight: 0.4
+  length_penalty_enabled: true
+  length_penalty_coeff: 0.1
+  success_threshold: 0.0
+```
+
+训练时用 Hydra 覆盖：
+
+```bash
+reward.consistency_weight=0.3 reward.length_penalty_coeff=0.05
+```
+
+采样时用 CLI：
+
+```bash
+--plan-consistency / --no-plan-consistency
+--plan-consistency-weight 0.2
+--plan-consistency-tau 0.45
+--plan-consistency-lambda 0.5
+--length-penalty / --no-length-penalty
+--length-penalty-coeff 0.1
+```
+
+每条轨迹的分解结果写入 `trajectory.info["reward_shaping"]`，包含 `r_con`、`r_len`、`success`、匹配上的计划步数和每个计划步的最佳相似度，便于排查。
+
+#### 已知局限
+
+1. **R_con 以任务成功为前提，梯度信号因此更稀疏。** 这是为了堵住「生成一个容易照做的简单计划、照做但不完成任务」的 reward hacking 路径，代价是早期成功率低时 R_con 几乎不提供信号；它塑造的是「已经能做对的轨迹要按计划做对」，而不是引导失败轨迹向计划靠拢。若确实需要在失败轨迹上也给一致性信号，把 `plan_reward.shape_reward()` 里 R_con 分支的 `success` 条件去掉即可。
+2. **WebShop 的计划若写得抽象**（"search for the requested product"），而动作里是具体属性（`search[black desk lamp]`）或不透明的 ASIN（`click[b08l5nqw2x]`），词面重合天然很低，R_con 会退化到 +0.25 左右且区分度明显变差。当前 meta-plan prompt 会把任务描述注入 `{{TASK}}`，生成的计划通常带具体属性，所以实际影响有限。
+3. **三个任务的 reward 量纲不同。** ScienceWorld 的环境 reward 是 0–100（累计 score 的逐步 delta 之和），ALFWorld 是 0/1，WebShop 是 0–1 的连续匹配分。因此同样的 0.2 / 0.1 附加项在 ScienceWorld 上相对占比极小；若希望三个任务 shaping 强度一致，需要按任务放大 `consistency_weight` 和 `length_penalty_coeff`，或先归一化环境 reward。同理，`success_threshold=0.0` 意味着 ScienceWorld 和 WebShop 的「部分得分」也会被判为完成，按需调高。
+4. 被 overlong filter mask 掉的轨迹（`TRUNCATION`/`MAX_STEPS`/`TIMEOUT`）不做 shaping。
+
+### 8.4 GRPO 与权重同步
 
 默认配置：
 
@@ -753,6 +902,12 @@ TASK=webshop \
 TRAIN_GPUS=1,2,3 \
 PLANNING_ENABLED=true \
 PLANNING_MAX_TOKENS=1024 \
+PLAN_CONSISTENCY_ENABLED=true \
+PLAN_CONSISTENCY_WEIGHT=0.2 \
+PLAN_CONSISTENCY_TAU=0.45 \
+PLAN_CONSISTENCY_LAMBDA=0.5 \
+LENGTH_PENALTY_ENABLED=true \
+LENGTH_PENALTY_COEFF=0.1 \
 GROUP_SIZE=8 \
 NUM_MINIBATCHES=8 \
 TRAIN_BATCH_SIZE=1 \
@@ -763,6 +918,8 @@ N_PARALLEL_AGENTS=2 \
 TRAIN_LIMIT=0 \
 VAL_LIMIT=16 \
 TOTAL_EPOCHS=2 \
+TOTAL_STEPS=0 \
+SAVE_FREQ=2000 \
 EXPERIMENT_NAME=mprl-webshop-plan \
 CHECKPOINT_DIR=/tmp/rllm-mprl-webshop-plan \
 ./run_train_mprl_swift_server.sh
@@ -773,6 +930,39 @@ CHECKPOINT_DIR=/tmp/rllm-mprl-webshop-plan \
 - WebShop：`MAX_STEPS=12`，`N_PARALLEL_AGENTS=2`
 - ALFWorld：`MAX_STEPS=40`，`N_PARALLEL_AGENTS=2`
 - ScienceWorld：`MAX_STEPS=60`，`N_PARALLEL_AGENTS=1`
+
+注意 `MAX_STEPS`（环境交互步上限，`agent.max_steps`）和下面的 `TOTAL_STEPS`（训练 batch 数，`trainer.total_steps`）是两个不相干的量。
+
+#### 训练时长：epoch 还是 step
+
+`trainer.total_epochs` **只支持整数**。Hydra 会接受 `trainer.total_epochs=1.5`，但训练循环里 `range()` 会在模型加载和 step-0 验证之后才抛 `TypeError`，失败得很晚，所以现在启动时就会显式报错。
+
+需要非整数的训练量时改用 `trainer.total_steps`（环境变量 `TOTAL_STEPS`），它按**训练 batch 数**计，为正时覆盖 `total_epochs`：
+
+```bash
+TOTAL_STEPS=150 ./run_train_mprl_swift_server.sh   # 恰好训练 150 个 batch 后停止
+```
+
+- 默认 `0`，即沿用 `TOTAL_EPOCHS` 的旧行为。
+- 计数与日志、验证、checkpoint 用的 `batch_idx` 是同一个，因此可以直接和 `TEST_FREQ`/`SAVE_FREQ` 对齐。
+- 达到预算就跳出，不必等当前 epoch 走完；数据不够时会自动开始新一轮，`DistributedSampler` 的 epoch seed 照常递增。
+- 与断点续训兼容：`batch_idx` 从 checkpoint 恢复，`TOTAL_STEPS` 是总量而非增量。
+- 换算：`1 epoch = ceil(训练样本数 / TRAIN_BATCH_SIZE)` 个 batch。想跑 1.5 个 epoch，就把 `TOTAL_STEPS` 设为该值的 1.5 倍。
+
+#### checkpoint
+
+由 `trainer.save_freq`（环境变量 `SAVE_FREQ`，默认 2000）控制，单位同样是训练 batch：`batch_idx % save_freq == 0` 时保存，训练结束时若最后一个 batch 未落在整数倍上会再补存一次。
+
+保存的是 **LoRA adapter，不是完整模型**。`SwiftPolicyTrainer.save_checkpoint()` 对 `PeftModel` 调用 `save_pretrained()`，每个 `checkpoint-<batch_idx>/` 目录下是：
+
+```text
+adapter_config.json          # LoRA 配置
+adapter_model.safetensors    # 只有 LoRA 权重（base 权重不在里面）
+optimizer.pt                 # 优化器状态，用于续训
+tokenizer*                   # tokenizer 文件
+```
+
+同级目录还有 `latest_batch.txt`，记录最近一次保存的 `batch_idx`，重启时据此自动续训。因为 adapter 不含 base 权重，评测和续训都必须搭配同一个 `model.model_name_or_path` 使用（见第 11 节的 `adapter_name_or_path`）。
 
 显存不足时，优先按顺序调整：
 
@@ -814,6 +1004,8 @@ PYTHONPATH="$PWD:.." ../.venv-mprl311/bin/python -m mprl.run_interact \
 ```
 
 训练脚本使用环境变量 `PLANNING_ENABLED=true|false`；采样 Python CLI 使用 `--planning|--no-planning`。不要混用这两套参数形式。
+
+采样时的 reward shaping 开关见 8.3。注意 `--no-planning` 会同时让 R_con 失效（没有计划可对齐），而 `--no-plan-consistency` 只关掉 R_con、保留 Plan 注入，做消融时这两者不要混淆。
 
 ---
 
@@ -869,8 +1061,10 @@ rllm/logs/mprl/<task>/latest.train.err
 
 - `val_before_train=true`：正式更新前先记录 step 0 验证。
 - `test_freq=25`：每 25 个训练 batch 验证一次。
-- `save_freq=2000`：每 2,000 个训练 batch 保存一次。
+- `save_freq=2000`：每 2,000 个训练 batch 保存一次，存的是 LoRA adapter（详见 9.5）。
 - 默认 checkpoint：`/tmp/rllm-mprl-<task>`
+
+`save_freq=2000` 对短实验偏大——若 `TOTAL_EPOCHS`/`TOTAL_STEPS` 对应的 batch 数不足 2,000，中途只会在 `batch_idx=0` 存一次，其余都落到训练结束时的补存。短跑建议显式调小 `SAVE_FREQ`。
 
 `/tmp` 不适合长期保存。正式实验应显式指定持久化目录：
 

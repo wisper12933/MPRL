@@ -73,6 +73,7 @@ def main(config: DictConfig) -> None:
         "planning_max_tokens": int(config.planning.max_tokens),
         "planning_temperature": float(config.planning.temperature),
         "planning_top_p": float(config.planning.top_p),
+        "reward_config": OmegaConf.to_container(config.reward, resolve=True) if "reward" in config else None,
     }
 
     OmegaConf.update(config, "model.adapter_path", str(adapter_path), force_add=True)
@@ -91,6 +92,7 @@ def main(config: DictConfig) -> None:
                 "max_steps": max_steps,
                 "n_parallel_agents": n_parallel_agents,
                 "planning_enabled": bool(config.planning.enabled),
+                "reward_config": agent_args["reward_config"],
                 "interaction_prompt": str(spec.instruction_path),
                 "metaplan_prompt": str(spec.metaplan_prompt_path),
                 "env_args": env_args,

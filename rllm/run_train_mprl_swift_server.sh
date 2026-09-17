@@ -45,10 +45,18 @@ MAX_PROMPT_LENGTH="${MAX_PROMPT_LENGTH:-6144}"
 MAX_RESPONSE_LENGTH="${MAX_RESPONSE_LENGTH:-4096}"
 PLANNING_ENABLED="${PLANNING_ENABLED:-true}"
 PLANNING_MAX_TOKENS="${PLANNING_MAX_TOKENS:-1024}"
+PLAN_CONSISTENCY_ENABLED="${PLAN_CONSISTENCY_ENABLED:-true}"
+PLAN_CONSISTENCY_WEIGHT="${PLAN_CONSISTENCY_WEIGHT:-0.2}"
+PLAN_CONSISTENCY_TAU="${PLAN_CONSISTENCY_TAU:-0.45}"
+PLAN_CONSISTENCY_LAMBDA="${PLAN_CONSISTENCY_LAMBDA:-0.5}"
+LENGTH_PENALTY_ENABLED="${LENGTH_PENALTY_ENABLED:-true}"
+LENGTH_PENALTY_COEFF="${LENGTH_PENALTY_COEFF:-0.1}"
 GROUP_SIZE="${GROUP_SIZE:-8}"
 TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-1}"
 NUM_MINIBATCHES="${NUM_MINIBATCHES:-8}"
 TOTAL_EPOCHS="${TOTAL_EPOCHS:-2}"
+TOTAL_STEPS="${TOTAL_STEPS:-0}"
+SAVE_FREQ="${SAVE_FREQ:-2000}"
 
 PROJECT_NAME="${PROJECT_NAME:-rllm-mprl}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-mprl-${TASK}}"
@@ -145,8 +153,15 @@ echo "vllm_url=$VLLM_URL"
 echo "max_steps=$MAX_STEPS"
 echo "n_parallel_agents=$N_PARALLEL_AGENTS"
 echo "planning_enabled=$PLANNING_ENABLED"
+echo "plan_consistency=$PLAN_CONSISTENCY_ENABLED weight=$PLAN_CONSISTENCY_WEIGHT tau=$PLAN_CONSISTENCY_TAU lambda=$PLAN_CONSISTENCY_LAMBDA"
+echo "length_penalty=$LENGTH_PENALTY_ENABLED coeff=$LENGTH_PENALTY_COEFF"
 echo "train_limit=$TRAIN_LIMIT val_limit=$VAL_LIMIT"
-echo "checkpoint_dir=$CHECKPOINT_DIR"
+if [[ "$TOTAL_STEPS" -gt 0 ]]; then
+    echo "budget=total_steps=$TOTAL_STEPS (total_epochs=$TOTAL_EPOCHS ignored)"
+else
+    echo "budget=total_epochs=$TOTAL_EPOCHS"
+fi
+echo "save_freq=$SAVE_FREQ checkpoint_dir=$CHECKPOINT_DIR"
 
 CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "$ACCELERATE_BIN" launch \
     --num_processes "$NUM_GPUS" \
@@ -170,12 +185,20 @@ CUDA_VISIBLE_DEVICES="$TRAIN_GPUS" "$ACCELERATE_BIN" launch \
     rollout.weight_sync_mode=auto \
     planning.enabled="$PLANNING_ENABLED" \
     planning.max_tokens="$PLANNING_MAX_TOKENS" \
+    reward.consistency_enabled="$PLAN_CONSISTENCY_ENABLED" \
+    reward.consistency_weight="$PLAN_CONSISTENCY_WEIGHT" \
+    reward.tau="$PLAN_CONSISTENCY_TAU" \
+    reward.lambda_len="$PLAN_CONSISTENCY_LAMBDA" \
+    reward.length_penalty_enabled="$LENGTH_PENALTY_ENABLED" \
+    reward.length_penalty_coeff="$LENGTH_PENALTY_COEFF" \
     training.group_size="$GROUP_SIZE" \
     training.num_minibatches="$NUM_MINIBATCHES" \
     data.train_batch_size="$TRAIN_BATCH_SIZE" \
     data.max_prompt_length="$MAX_PROMPT_LENGTH" \
     data.max_response_length="$MAX_RESPONSE_LENGTH" \
     trainer.total_epochs="$TOTAL_EPOCHS" \
+    trainer.total_steps="$TOTAL_STEPS" \
+    trainer.save_freq="$SAVE_FREQ" \
     trainer.project_name="$PROJECT_NAME" \
     trainer.experiment_name="$EXPERIMENT_NAME" \
     trainer.default_local_dir="$CHECKPOINT_DIR" \

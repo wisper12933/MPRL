@@ -39,6 +39,21 @@ planning:
   temperature: 0.1
   top_p: 0.9
 
+# Rule-based reward shaping on top of the environment reward. See README section 8.3.
+reward:
+  # R_con: plan/execution consistency. Only active in plan mode.
+  consistency_enabled: true
+  consistency_weight: 0.2
+  # sim = verb_weight * verb_hit + (1 - verb_weight) * dice(arguments); tau is the
+  # threshold above which a plan step counts as executed.
+  tau: 0.45
+  lambda_len: 0.5
+  verb_weight: 0.4
+  # -coeff * steps_used / max_steps, applied only when the task is completed.
+  length_penalty_enabled: true
+  length_penalty_coeff: 0.1
+  success_threshold: 0.0
+
 training:
   group_size: 8
   learning_rate: 1.0e-6
@@ -79,7 +94,10 @@ data:
   val_batch_size: 1
 
 trainer:
+  # total_epochs must be a whole number. Set total_steps > 0 to budget by training
+  # batches instead; it then overrides total_epochs.
   total_epochs: 1
+  total_steps: 0
   logger: [console, wandb]
   project_name: rllm-mprl
   experiment_name: mprl-webshop

@@ -7,6 +7,7 @@ Multi-GPU is supported via HuggingFace Accelerate (launch with `accelerate launc
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import logging
 import os
@@ -159,17 +160,35 @@ class SwiftAgentTrainer:
         batch_idx = self.start_batch
         learning_rate = self.config.training.learning_rate
 
+        # `total_steps` counts training batches and, when positive, overrides
+        # `total_epochs`. It exists because `total_epochs` has to be a whole number, so a
+        # budget like "1.5 passes over the data" is not otherwise expressible.
+        total_steps = int(self.config.trainer.get("total_steps", 0) or 0)
+        total_epochs = self.config.trainer.total_epochs
+        if total_steps <= 0 and float(total_epochs) != int(total_epochs):
+            raise ValueError(f"trainer.total_epochs must be a whole number, got {total_epochs}. Use trainer.total_steps for a finer budget.")
+        total_epochs = int(total_epochs)
+        if self.trainer.is_main_process:
+            budget = f"total_steps={total_steps}" if total_steps > 0 else f"total_epochs={total_epochs}"
+            logger.info("Training budget: %s (starting from batch %s)", budget, batch_idx)
+
         if self.config.trainer.get("val_before_train", False) and self.val_dataloader:
             self._sync_rollout_model()
             val_metrics = await self.validate_agent(self.val_dataloader)
             if val_metrics and tracking_logger is not None:
                 tracking_logger.log(data=val_metrics, step=batch_idx)
 
-        for epoch in range(self.config.trainer.total_epochs):
+        # An unbounded epoch counter lets the step budget decide when to stop, while the
+        # sampler still gets a fresh epoch seed on every pass over the data.
+        for epoch in itertools.count() if total_steps > 0 else range(total_epochs):
+            if total_steps > 0 and batch_idx >= total_steps:
+                break
             if self.train_sampler is not None:
                 self.train_sampler.set_epoch(epoch)
 
             for batch_data in self.train_dataloader:
+                if total_steps > 0 and batch_idx >= total_steps:
+                    break
                 if batch_idx < self.start_batch:
                     batch_idx += 1
                     continue

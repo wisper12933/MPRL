@@ -1,0 +1,42 @@
+# OPTIONAL. ByteDance-internal packages present in .venv-mprl311 but not on public
+# PyPI, plus the transitive deps that exist only to serve them. Needs the internal
+# index. The three-task RL + infer pipeline runs fine without any of this.
+#
+#   uv pip install --python .venv-mprl311/bin/python --no-deps -r requirements-internal.txt
+#
+# NOTE: byted-wandb provides the top-level `wandb` module. If you install this file,
+#       do NOT also install public wandb.
+
+asn1crypto==1.5.1
+byted-wandb==0.13.98
+bytedance-context==0.8.1
+bytedance-metrics==0.4.0
+bytedance-servicediscovery==0.1.3
+bytedbackgrounds==0.0.6
+byteddatabus==1.0.8
+byteddps==0.0.9
+bytedenv==0.8.2
+bytedlogger==0.15.2
+bytedmemfd==0.2
+bytedmetrics==0.11.0
+bytedray==2.10.0.40
+bytedservicediscovery==0.18.3
+bytedtcc==1.4.4
+bytedtos==1.1.22
+bytedtrace==0.6.6
+bytedztijwt==0.2.27
+bytedztijwthelper==0.0.25
+bytedztispiffe==0.0.17
+crccheck==1.3.1
+deprecated==1.3.1
+docker-pycreds==0.4.0
+ecdsa==0.19.2
+ipaddress==1.0.23
+ply==3.11
+promise==2.3
+python-etcd==0.4.5
+python-jose==3.5.0
+rsa==4.9.1
+schedule==1.2.2
+shortuuid==1.0.13
+thriftpy2==0.6.0

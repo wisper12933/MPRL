@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from mprl.plan_reward import PlanRewardConfig, shape_reward
 from rllm.agents.interact_agent import InteractAgent
 
 
@@ -18,6 +19,7 @@ class PlannedInteractAgent(InteractAgent):
         planning_max_tokens: int = 1024,
         planning_temperature: float = 0.1,
         planning_top_p: float = 0.9,
+        reward_config: dict[str, Any] | None = None,
     ):
         prompt_path = Path(metaplan_prompt_path)
         if not prompt_path.is_file():
@@ -29,6 +31,7 @@ class PlannedInteractAgent(InteractAgent):
         self.planning_max_tokens = int(planning_max_tokens)
         self.planning_temperature = float(planning_temperature)
         self.planning_top_p = float(planning_top_p)
+        self.reward_config = PlanRewardConfig.from_mapping(reward_config)
         self.generated_plan: str | None = None
         self._plan_injected = False
         super().__init__(base_prompt_path=base_prompt_path)
@@ -80,3 +83,26 @@ class PlannedInteractAgent(InteractAgent):
         self.generated_plan = workflow
         self._plan_injected = True
         self._trajectory.info["metaplan"] = workflow
+
+    def shape_trajectory_reward(self, trajectory, max_steps: int) -> float:
+        """Add R_con and the completion-length penalty onto the terminal step reward.
+
+        The engine re-sums step rewards after this call, so folding the delta into the
+        last step keeps `trajectory.reward` and the Monte Carlo returns consistent.
+        """
+        if not trajectory.steps:
+            return 0.0
+
+        env_reward = sum(step.reward or 0.0 for step in trajectory.steps)
+        actions = [str(step.action or "") for step in trajectory.steps]
+        delta, info = shape_reward(
+            env_reward=env_reward,
+            n_steps=len(trajectory.steps),
+            max_steps=int(max_steps),
+            actions=actions,
+            plan=self.generated_plan,
+            config=self.reward_config,
+        )
+        trajectory.steps[-1].reward = (trajectory.steps[-1].reward or 0.0) + delta
+        trajectory.info["reward_shaping"] = info
+        return delta

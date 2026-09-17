@@ -47,6 +47,12 @@ def parse_args():
     parser.add_argument("--planning-max-tokens", type=int, default=1024)
     parser.add_argument("--planning-temperature", type=float, default=0.1)
     parser.add_argument("--planning-top-p", type=float, default=0.9)
+    parser.add_argument("--plan-consistency", action=argparse.BooleanOptionalAction, default=True, help="Add the rule-based plan/execution consistency reward R_con (plan mode only).")
+    parser.add_argument("--plan-consistency-weight", type=float, default=0.2, help="Weight applied to R_con.")
+    parser.add_argument("--plan-consistency-tau", type=float, default=0.45, help="Similarity threshold above which a plan step counts as executed.")
+    parser.add_argument("--plan-consistency-lambda", type=float, default=0.5, help="Weight of the |L_plan - L_act| term inside R_con.")
+    parser.add_argument("--length-penalty", action=argparse.BooleanOptionalAction, default=True, help="Penalize trajectory length on completed tasks.")
+    parser.add_argument("--length-penalty-coeff", type=float, default=0.1, help="Penalty is -coeff * steps_used / max_steps.")
     parser.add_argument("--repeat-k", type=int, default=2, help="How many times to repeat each unique task for pass@k estimation.")
     parser.add_argument("--limit", type=int, default=8, help="Maximum number of unique tasks to sample. <=0 means all tasks.")
     parser.add_argument("--n-parallel-agents", type=int, default=None, help="Number of concurrent environment-agent workers.")
@@ -103,6 +109,14 @@ def main():
     tokenizer_path = args.tokenizer_path or args.base_model
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_path, trust_remote_code=True)
+    reward_config = {
+        "consistency_enabled": args.plan_consistency,
+        "consistency_weight": args.plan_consistency_weight,
+        "tau": args.plan_consistency_tau,
+        "lambda_len": args.plan_consistency_lambda,
+        "length_penalty_enabled": args.length_penalty,
+        "length_penalty_coeff": args.length_penalty_coeff,
+    }
     agent_args = {
         "base_prompt_path": str(prompt_path),
         "metaplan_prompt_path": str(metaplan_prompt_path),
@@ -110,6 +124,7 @@ def main():
         "planning_max_tokens": args.planning_max_tokens,
         "planning_temperature": args.planning_temperature,
         "planning_top_p": args.planning_top_p,
+        "reward_config": reward_config,
     }
     sampling_params = {
         "temperature": args.temperature,
@@ -132,6 +147,7 @@ def main():
         "prompt_path": str(prompt_path),
         "metaplan_prompt_path": str(metaplan_prompt_path),
         "planning_enabled": args.planning,
+        "reward_config": reward_config,
         "test_index_path": str(index_path),
         "base_model": args.base_model,
         "tokenizer_path": tokenizer_path,
