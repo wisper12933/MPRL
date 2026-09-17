@@ -50,6 +50,8 @@ MPRL/
 
 ---
 
+
+
 ## 2. 模型与 adapter
 
 默认基础模型：
@@ -76,7 +78,11 @@ MPRL/
 
 ---
 
+
+
 ## 3. 环境准备
+
+
 
 ### 3.1 Python 环境（只需公网包）
 
@@ -86,7 +92,7 @@ MPRL/
 .venv-mprl311
 ```
 
-**整套环境只需要公网 PyPI，不依赖任何内网 index。** `pyproject.toml` 里的每一条 pin 都取自已跑通三个任务 RL 与 infer 的 `.venv-mprl311`，并且逐个核对过公网 PyPI 上存在同版本。字节内部包（`byted-wandb`、`bytedray` 等 33 个）全部是可选的，单独放在 `requirements-internal.txt`，三个任务的训练和推理都不依赖它们。
+**整套环境只需要公网 PyPI。** `pyproject.toml` 里的每一条 pin 都取自已跑通三个任务 RL 与 infer 的 `.venv-mprl311`，并且逐个核对过公网 PyPI 上存在同版本。
 
 从仓库根目录创建环境：
 
@@ -100,15 +106,19 @@ uv pip install --python .venv-mprl311/bin/python --no-deps -e ./rllm
 
 extras 一览：
 
-| extra | 是否必需 | 说明 |
-|---|---|---|
-| `swift` | 必需 | `ms-swift==3.12.3` 及其专属子树，`swift rollout` 命令来自这里。只执行 `-e ./rllm` 不足以保证该命令存在 |
-| `flash-attn` | RL 训练必需 | cu12 / torch 2.8 / cp311 的预编译 wheel，避免裸 pin 触发的源码编译 |
-| `webshop-nlp` | WebShop 必需 | spaCy `en_core_web_sm`，不在 PyPI 上，走 GitHub release wheel |
-| `wandb-public` | 与 byted-wandb 二选一 | 公网 `wandb==0.23.1`，详见 3.2 |
-| `flashinfer` | 可选 | vLLM 的 FlashInfer backend 加整套 CUDA 13 wheel，数 GB |
-| `dev` | 可选 | pytest、memray 等 |
-| `image-leftovers` | 不要装 | MLX 基础镜像残留，其中 `grpcio-reflection` 与锁定的 `grpcio`/`protobuf` 直接冲突 |
+
+| extra             | 是否必需              | 说明                                                                          |
+| ----------------- | ----------------- | --------------------------------------------------------------------------- |
+| `swift`           | 必需                | `ms-swift==3.12.3` 及其专属子树，`swift rollout` 命令来自这里。只执行 `-e ./rllm` 不足以保证该命令存在 |
+| `flash-attn`      | RL 训练必需           | cu12 / torch 2.8 / cp311 的预编译 wheel，避免裸 pin 触发的源码编译                         |
+| `webshop-nlp`     | WebShop 必需        | spaCy `en_core_web_sm`，不在 PyPI 上，走 GitHub release wheel                     |
+| `wandb-public`    | 与 byted-wandb 二选一 | 公网 `wandb==0.23.1`，详见 3.2                                                   |
+| `flashinfer`      | 可选                | vLLM 的 FlashInfer backend 加整套 CUDA 13 wheel，数 GB                            |
+| `dev`             | 可选                | pytest、memray 等                                                             |
+| `image-leftovers` | 不要装               | MLX 基础镜像残留，其中 `grpcio-reflection` 与锁定的 `grpcio`/`protobuf` 直接冲突             |
+
+
+
 
 #### 精确复现（跳过依赖解析）
 
@@ -158,11 +168,13 @@ print("gpu count:", torch.cuda.device_count())
 PY
 ```
 
+
+
 ### 3.2 WandB 与内部包（可选）
 
 `wandb` 是二选一：公网 `wandb` 和 `byted-wandb` 都提供顶层 `wandb` 模块，只能装一个。3.1 的默认命令用的是公网版（`wandb-public` extra），**在公网环境下不需要做任何额外配置**。
 
-只有需要上传到公司实验平台时，才改用 `byted-wandb`。这条路径需要内网 index：
+ `byted-wandb`这条路径需要内网 index：
 
 ```bash
 uv pip install --python .venv-mprl311/bin/python --no-deps -r requirements-internal.txt
@@ -182,8 +194,6 @@ uv pip show --python .venv-mprl311/bin/python byted-wandb
 WANDB_DISABLE_SERVICE=true
 WANDB_START_METHOD=thread
 ```
-
-这样可以绕过 byted-wandb service subprocess 的临时端口文件问题，同时仍上传到公司实验平台。日志中的 HTTPS、DNS 或 SSL warning 通常表示公司网络链路暂时不可用；本地训练和本地日志通常仍可继续。
 
 ### 3.3 Java 11
 
@@ -206,6 +216,8 @@ test -f /opt/tiger/jdk/jdk11/lib/server/libjvm.so
 export MPRL_JAVA_HOME=/path/to/jdk11
 export MPRL_JVM_PATH=/path/to/jdk11/lib/server/libjvm.so
 ```
+
+
 
 ### 3.4 GPU 分配
 
@@ -247,6 +259,8 @@ items_human_ins.json
 ```
 
 ---
+
+
 
 ## 4. Benchmark 说明
 
@@ -300,6 +314,8 @@ env:
   expert_plan: False
 ```
 
+
+
 ### 4.3 ScienceWorld
 
 ScienceWorld 是包含物理、化学、电学和生物实验的文本科学环境。
@@ -323,7 +339,11 @@ RL 环境内部将 ScienceWorld 的累计 score 转换为逐步 delta reward，�
 
 ---
 
+
+
 ## 5. 数据说明
+
+
 
 ### 5.1 第一阶段 Meta-Plan 数据
 
@@ -369,6 +389,8 @@ data/step1_metaplan/test/metaplan_test.json
 - WebShop：`Please generate a step-by-step workflow for a web shopping task:`
 - ALFWorld：`Please generate a step-by-step workflow for a house holding task:`
 - ScienceWorld：`Please generate a step-by-step workflow for a scientific task:`
+
+
 
 ### 5.2 第二阶段下游 SFT 数据
 
@@ -421,6 +443,8 @@ PYTHONPATH="$PWD:.." ../.venv-mprl311/bin/python \
   --limit 2
 ```
 
+
+
 ### 5.4 RL prompt
 
 正常交互 prompt：
@@ -443,7 +467,11 @@ data/instructions/metaplan/sciworld.txt
 
 ---
 
+
+
 ## 6. 第一阶段：Meta-Plan MAML
+
+
 
 ### 6.1 算法流程
 
@@ -536,6 +564,8 @@ Meta-Plan 文本评测输出：
 
 ---
 
+
+
 ## 7. 第二阶段：任务独立 SFT
 
 第二阶段从同一个 Meta-Plan MAML 模型出发，分别使用：
@@ -565,7 +595,11 @@ Qwen3-4B-Instruct-MAML-plan-sft-sci
 
 ---
 
+
+
 ## 8. 第三阶段：带可选规划的交互式 RL
+
+
 
 ### 8.1 一条 trajectory 的执行顺序
 
@@ -594,6 +628,8 @@ env.reset()
   -> 后续 RL 流程不变
 ```
 
+
+
 ### 8.2 为什么规划不参与 policy gradient
 
 规划请求由 `AgentExecutionEngine._run_initial_planning()` 单独执行。生成结果只写入：
@@ -621,9 +657,9 @@ R = R_env  +  0.2 * R_con  +  R_len
 R_con(o) = (1 / L_plan) * Σ_k 1[sim(plan_k, act_f(k)) ≥ τ]  -  λ * |L_plan - L_act| / max(L_plan, L_act)
 ```
 
-两个前提都必须满足才会计算：**任务已完成**，且**注入了 `<workflow>`**。关闭 Plan 时该项恒为 0，因为没有可对齐的计划；任务失败时也恒为 0，否则"生成一个容易照做的简单计划、照做但不完成任务"就能白拿最多 +0.2。默认权重 0.2，`τ=0.45`，`λ=0.5`。
+两个前提都必须满足才会计算：**任务已完成**，且**注入了** `<workflow>`。关闭 Plan 时该项恒为 0，因为没有可对齐的计划；任务失败时也恒为 0，否则"生成一个容易照做的简单计划、照做但不完成任务"就能白拿最多 +0.2。默认权重 0.2，`τ=0.45`，`λ=0.5`。
 
-**相关度 `sim` 完全基于规则，不依赖任何额外模型编码或语料统计：**
+**相关度** `sim` **完全基于规则，不依赖任何额外模型编码或语料统计：**
 
 ```text
 sim(p, a) = w_v * 1[verb(a) ∈ tokens(p)]  +  (1 - w_v) * Dice(args(p), args(a))
@@ -633,21 +669,23 @@ sim(p, a) = w_v * 1[verb(a) ∈ tokens(p)]  +  (1 - w_v) * Dice(args(p), args(a)
 2. **动词**：动作的首个 token（`go`/`take`/`open`/`search`/`click`/`activate`……）。三个环境的动作都是「命令 + 参数」形式，动词决定了动作类型。
 3. **参数**：其余内容词，用 Dice 系数算重合度。Dice 比 Jaccard 更能容忍「计划句子长、环境命令短」的长度差。
 4. **复合词前缀匹配**：共享前缀不短于 4 个字符即算命中，让 `sink` 对上 `sinkbasin`、`table` 对上 `diningtable`。
-5. **对齐 `f(k)`**：零 gap cost 的 Needleman-Wunsch 单调对齐，计划步和动作都可被跳过，但 `f(k)` 不回退。这让 R_con 衡量的是「按计划顺序执行」，而不是「无序地做过计划里的事」。
+5. **对齐** `f(k)`：零 gap cost 的 Needleman-Wunsch 单调对齐，计划步和动作都可被跳过，但 `f(k)` 不回退。这让 R_con 衡量的是「按计划顺序执行」，而不是「无序地做过计划里的事」。
 
 动词和参数分开计分是有意的。若用单一词袋分数，`go to sinkbasin 1` 对上「Go to the desk」会因为共享动词 `go` 在两 token 的动作里占比过高而拿到 0.67，越过阈值；分开之后这种「动词对、目标错」的情形被封顶在 `w_v = 0.4`，低于默认 `τ = 0.45`。
 
 实测区分度：
 
-| 场景 | R_con |
-|---|---|
-| ALFWorld 按计划执行 | +0.92 |
-| ALFWorld 完全偏离计划 | +0.00 |
+
+| 场景                 | R_con |
+| ------------------ | ----- |
+| ALFWorld 按计划执行     | +0.92 |
+| ALFWorld 完全偏离计划    | +0.00 |
 | ScienceWorld 按计划执行 | +0.71 |
-| ScienceWorld 完全偏离 | −0.08 |
-| WebShop 按计划执行 | +0.75 |
-| WebShop 部分偏离 | +0.40 |
-| WebShop 完全偏离 | −0.10 |
+| ScienceWorld 完全偏离  | −0.08 |
+| WebShop 按计划执行      | +0.75 |
+| WebShop 部分偏离       | +0.40 |
+| WebShop 完全偏离       | −0.10 |
+
 
 最坏情形（12 步计划 × 60 步动作）单条轨迹约 3 ms，相对 LLM 调用可忽略。
 
@@ -661,15 +699,21 @@ R_len = -0.1 * 实际交互步数 / max_steps
 - 完成判定沿用仓库既有约定（`compute_pass_at_k()` 的 `reward > 0`），阈值由 `success_threshold` 控制。
 - 与是否启用 Plan 无关，这是它和 R_con 的关键区别：R_con 额外要求 plan 模式。
 
+
+
 #### 两项的生效条件
 
 `shape_reward()` 先判定 `success = R_env > success_threshold`，失败轨迹的 delta 恒为 0：
 
+
 | 任务完成 | 注入了 plan | R_con | R_len |
-| --- | --- | --- | --- |
-| 是 | 是 | 生效 | 生效 |
-| 是 | 否 | 0 | 生效 |
-| 否 | 任意 | 0 | 0 |
+| ---- | -------- | ----- | ----- |
+| 是    | 是        | 生效    | 生效    |
+| 是    | 否        | 0     | 生效    |
+| 否    | 任意       | 0     | 0     |
+
+
+
 
 #### 配置
 
@@ -711,6 +755,8 @@ reward.consistency_weight=0.3 reward.length_penalty_coeff=0.05
 3. **三个任务的 reward 量纲不同。** ScienceWorld 的环境 reward 是 0–100（累计 score 的逐步 delta 之和），ALFWorld 是 0/1，WebShop 是 0–1 的连续匹配分。因此同样的 0.2 / 0.1 附加项在 ScienceWorld 上相对占比极小；若希望三个任务 shaping 强度一致，需要按任务放大 `consistency_weight` 和 `length_penalty_coeff`，或先归一化环境 reward。同理，`success_threshold=0.0` 意味着 ScienceWorld 和 WebShop 的「部分得分」也会被判为完成，按需调高。
 4. 被 overlong filter mask 掉的轨迹（`TRUNCATION`/`MAX_STEPS`/`TIMEOUT`）不做 shaping。
 
+
+
 ### 8.4 GRPO 与权重同步
 
 默认配置：
@@ -739,6 +785,8 @@ training:
 
 ---
 
+
+
 ## 9. 第三阶段启动方式
 
 所有以下命令都从 `rllm/` 目录执行：
@@ -746,6 +794,8 @@ training:
 ```bash
 cd /path/to/MPRL/rllm
 ```
+
+
 
 ### 9.1 Terminal 1：启动 Swift rollout server
 
@@ -831,6 +881,8 @@ PLANNING_ENABLED=true \
 ./run_train_mprl_swift_server.sh
 ```
 
+
+
 ### 9.3 Terminal 2：关闭 Plan 训练
 
 关闭规划必须显式设置：
@@ -873,6 +925,8 @@ CHECKPOINT_DIR=/tmp/rllm-mprl-sciworld-no-plan \
 ```
 
 > `PLANNING_ENABLED=false` 只跳过初始 Meta-Plan 请求和上下文注入，不会关闭正常动作采样、GRPO、adapter 更新或 rollout 权重同步。
+
+
 
 ### 9.4 Plan 对照实验建议
 
@@ -949,6 +1003,8 @@ TOTAL_STEPS=150 ./run_train_mprl_swift_server.sh   # 恰好训练 150 个 batch 
 - 与断点续训兼容：`batch_idx` 从 checkpoint 恢复，`TOTAL_STEPS` 是总量而非增量。
 - 换算：`1 epoch = ceil(训练样本数 / TRAIN_BATCH_SIZE)` 个 batch。想跑 1.5 个 epoch，就把 `TOTAL_STEPS` 设为该值的 1.5 倍。
 
+
+
 #### checkpoint
 
 由 `trainer.save_freq`（环境变量 `SAVE_FREQ`，默认 2000）控制，单位同样是训练 batch：`batch_idx % save_freq == 0` 时保存，训练结束时若最后一个 batch 未落在整数倍上会再补存一次。
@@ -973,6 +1029,8 @@ tokenizer*                   # tokenizer 文件
 5. 降低 rollout server 的 `VLLM_GPU_MEMORY_UTILIZATION`。
 
 ---
+
+
 
 ## 10. 只采样、不训练
 
@@ -1009,6 +1067,8 @@ PYTHONPATH="$PWD:.." ../.venv-mprl311/bin/python -m mprl.run_interact \
 
 ---
 
+
+
 ## 11. Benchmark 独立评测
 
 运行前先检查 `maml/configs/*_eval_config.yaml` 中的基础模型和 adapter 路径。
@@ -1036,6 +1096,8 @@ ScienceWorld：
 这些脚本评测配置文件中指定的 adapter。第三阶段 checkpoint 若保存在其他位置，需要先更新对应 YAML 的 `adapter_name_or_path`。
 
 ---
+
+
 
 ## 12. 日志、验证和 checkpoint
 
@@ -1074,6 +1136,8 @@ CHECKPOINT_DIR=/mnt/hdfs/<user>/mprl-checkpoints/webshop-plan
 
 ---
 
+
+
 ## 13. 测试
 
 从 `rllm/` 目录执行：
@@ -1099,7 +1163,11 @@ tests/mprl/test_mprl_flow.py -q
 
 ---
 
+
+
 ## 14. 常见问题
+
+
 
 ### 14.1 `Weight update group already initialized`
 
@@ -1111,6 +1179,8 @@ tests/mprl/test_mprl_flow.py -q
 2. 停止并重启 `run_mprl_swift_rollout_server.sh`。
 3. 等待 health check 成功。
 4. 重新启动训练。
+
+
 
 ### 14.2 `Port 8000 is already in use`
 
@@ -1127,6 +1197,8 @@ VLLM_PORT=8001 ./run_mprl_swift_rollout_server.sh
 VLLM_PORT=8001 ./run_train_mprl_swift_server.sh
 ```
 
+
+
 ### 14.3 WebShop 找不到 `libjvm.so`
 
 不要使用旧的：
@@ -1141,6 +1213,8 @@ VLLM_PORT=8001 ./run_train_mprl_swift_server.sh
 /opt/tiger/jdk/jdk11/lib/server/libjvm.so
 ```
 
+
+
 ### 14.4 `CUDA out of memory. Tried to allocate more than 1EB`
 
 1EB 不是正常模型内存申请，通常说明 DDP collective 次序错位，而不是 sequence 太长。本仓库的 Swift trainer 已通过固定各 rank 的 minibatch 数和固定大小同步状态张量进行修复。
@@ -1152,11 +1226,15 @@ VLLM_PORT=8001 ./run_train_mprl_swift_server.sh
 - 如果失败发生在模型/环境初始化阶段，尚未初始化 Swift weight communicator：通常只需重启 trainer。
 - 如果已经发生过权重同步，或 server 日志出现 communicator 错误：必须重启 rollout server。
 
+
+
 ### 14.6 Gym 0.24 warning
 
 当前环境会输出 Gym 0.24 的兼容性 warning。它不是本项目已知训练失败的直接原因。不要仅为消除 warning 单独升级 Gym；ALFWorld/WebShop 的旧环境 API 可能依赖当前版本，升级前需要完整回归测试。
 
 ---
+
+
 
 ## 15. 推荐的完整实验顺序
 
